@@ -26,44 +26,46 @@ TEST_F(mpi_test_fixture, context_ordered)
 
     auto func = [&ctxt](int tid) {
         auto comm = ctxt.get_communicator();
-        auto msg_1 = comm.make_buffer<int>(size);
-        auto msg_2 = comm.make_buffer<int>(size);
-
+        auto smsg_1 = comm.make_buffer<int>(size);
+        auto smsg_2 = comm.make_buffer<int>(size);
+        auto rmsg_1 = comm.make_buffer<int>(size);
+        auto rmsg_2 = comm.make_buffer<int>(size);
+        bool      sent_1 = false;
+        bool      sent_2 = false;
         if (comm.rank() == 0)
         {
-            bool      sent_1 = false;
-            bool      sent_2 = false;
             const int payload_offset = 1 + tid;
             for (unsigned int i = 0; i < size; ++i)
             {
-                msg_1[i] = i + payload_offset;
-                msg_2[i] = i + payload_offset + 1;
+                smsg_1[i] = i + payload_offset;
+                smsg_2[i] = i + payload_offset + 1;
             }
-            std::vector<rank_type> neighs(comm.size() - 1);
+            std::vector<rank_type> neighs(comm.size()>1 ? comm.size() - 1 : 1, 0);
             for (int i = 1; i < comm.size(); ++i) neighs[i - 1] = i;
 
-            comm.send_multi(std::move(msg_1), neighs, tid,
-                [&sent_1](decltype(msg_1), std::vector<rank_type>, tag_type) { sent_1 = true; });
+            comm.send_multi(std::move(smsg_1), neighs, tid,
+                [&sent_1](decltype(smsg_1), std::vector<rank_type>, tag_type) { sent_1 = true; });
 
-            comm.send_multi(std::move(msg_2), neighs, tid,
-                [&sent_2](decltype(msg_2), std::vector<rank_type>, tag_type) { sent_2 = true; });
+            comm.send_multi(std::move(smsg_2), neighs, tid,
+                [&sent_2](decltype(smsg_2), std::vector<rank_type>, tag_type) { sent_2 = true; });
 
-            while (!sent_1 || !sent_2) { comm.progress(); }
         }
-        else
+        if (comm.rank() > 0 || comm.size() == 1)
         {
             // ordered sends/recvs with same tag should arrive in order
-            comm.recv(msg_1, 0, tid).wait();
-            comm.recv(msg_2, 0, tid).wait();
+            comm.recv(rmsg_1, 0, tid).wait();
+            comm.recv(rmsg_2, 0, tid).wait();
 
             // check message
             const int payload_offset = 1 + tid;
             for (unsigned int i = 0; i < size; ++i)
             {
-                EXPECT_EQ(msg_1[i], i + payload_offset);
-                EXPECT_EQ(msg_2[i], i + payload_offset + 1);
+                EXPECT_EQ(rmsg_1[i], i + payload_offset);
+                EXPECT_EQ(rmsg_2[i], i + payload_offset + 1);
             }
         }
+        if (comm.rank() == 0)
+            while (!sent_1 || !sent_2) { comm.progress(); }
     };
 
     std::vector<std::thread> threads;

@@ -18,13 +18,14 @@
 void
 test_1(oomph::communicator& comm, unsigned int size, int thread_id = 0)
 {
-    EXPECT_TRUE(comm.size() == 4);
+    EXPECT_TRUE(comm.size() > 0);
     auto msg = comm.make_buffer<int>(size);
 
     if (comm.rank() == 0)
     {
+        std::vector<int> dsts(comm.size()>1 ? comm.size()-1 : 1, 0);
         for (unsigned int i = 0; i < size; ++i) msg[i] = i;
-        std::vector<int> dsts = {1, 2, 3};
+        for (int d = 1; d<comm.size(); ++d) dsts[d-1] = d;
 
         EXPECT_EQ(comm.scheduled_sends(), 0);
         EXPECT_EQ(comm.scheduled_recvs(), 0);
@@ -34,7 +35,7 @@ test_1(oomph::communicator& comm, unsigned int size, int thread_id = 0)
         EXPECT_EQ(comm.scheduled_sends(), 0);
         EXPECT_EQ(comm.scheduled_recvs(), 0);
     }
-    else
+    if (comm.rank() > 0 || comm.size() == 1)
     {
         EXPECT_EQ(comm.scheduled_sends(), 0);
         EXPECT_EQ(comm.scheduled_recvs(), 0);
@@ -89,14 +90,15 @@ TEST_F(mpi_test_fixture, test_cancel_request_mt)
 void
 test_2(oomph::communicator& comm, unsigned int size, int thread_id = 0)
 {
-    EXPECT_TRUE(comm.size() == 4);
+    EXPECT_TRUE(comm.size() > 0);
     auto msg = comm.make_buffer<int>(size);
     using msg_t = decltype(msg);
 
     if (comm.rank() == 0)
     {
+        std::vector<int> dsts(comm.size()>1 ? comm.size()-1 : 1, 0);
         for (unsigned int i = 0; i < size; ++i) msg[i] = i;
-        std::vector<int> dsts = {1, 2, 3};
+        for (int d = 1; d<comm.size(); ++d) dsts[d-1] = d;
 
         EXPECT_EQ(comm.scheduled_sends(), 0);
         EXPECT_EQ(comm.scheduled_recvs(), 0);
@@ -106,7 +108,7 @@ test_2(oomph::communicator& comm, unsigned int size, int thread_id = 0)
         EXPECT_EQ(comm.scheduled_sends(), 0);
         EXPECT_EQ(comm.scheduled_recvs(), 0);
     }
-    else
+    if (comm.rank() > 0 || comm.size() == 1)
     {
         EXPECT_EQ(comm.scheduled_sends(), 0);
         EXPECT_EQ(comm.scheduled_recvs(), 0);
