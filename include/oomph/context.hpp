@@ -15,6 +15,7 @@
 #include <oomph/communicator.hpp>
 #include <hwmalloc/config.hpp>
 #include <hwmalloc/device.hpp>
+#include <hwmalloc/register.hpp>
 
 namespace oomph
 {
@@ -68,7 +69,7 @@ class context
 };
 
 template<typename Context>
-typename Context::region_type register_memory(Context&, void*, std::size_t);
+typename Context::region_type register_memory(Context&, void*, std::size_t, hwmalloc::registration_flags);
 #if HWMALLOC_ENABLE_DEVICE
 template<typename Context>
 typename Context::device_region_type register_device_memory(Context&, void*, std::size_t);

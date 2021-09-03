@@ -66,7 +66,7 @@ class rma_context
 
 template<>
 rma_region
-register_memory<rma_context>(rma_context& c, void* ptr, std::size_t size)
+register_memory<rma_context>(rma_context& c, void* ptr, std::size_t size, hwmalloc::registration_flags)
 {
     return c.make_region(ptr, size);
 }

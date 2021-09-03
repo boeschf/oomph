@@ -51,7 +51,7 @@ class context_impl : public context_base
 
 template<>
 region
-register_memory<context_impl>(context_impl& c, void* ptr, std::size_t)
+register_memory<context_impl>(context_impl& c, void* ptr, std::size_t, hwmalloc::registration_flags)
 {
     return c.make_region(ptr);
 }
