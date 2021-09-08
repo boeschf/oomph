@@ -26,7 +26,7 @@ namespace oomph
 {
 
 // cppcheck-suppress ConfigurationNotChecked
-static hpx::debug::enable_print<true> com_deb("COMMUNI");
+static hpx::debug::enable_print<false> com_deb("COMMUNI");
 static hpx::debug::enable_print<true> com_err("COMMUNI");
 
 struct communicator_state
@@ -90,26 +90,28 @@ class communicator_impl : public communicator_base<communicator_impl>
     communicator_impl(context_impl* ctxt)
     : communicator_base(ctxt)
     , m_context(ctxt)
+    , m_ctag(0)
     , m_send_cb_queue(128)
     , m_recv_cb_queue(128)
     {
+        OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("MPI_comm"), hpx::debug::ptr(mpi_comm())));
         m_state.init(m_context->get_controller());
 
-        const int random_msg_tag = 65535;
-        if (rank()==0) {
-            m_ctag = reinterpret_cast<std::uintptr_t>(this);
-            OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("MPI send tag")
-                                        ,hpx::debug::hex<8>(m_ctag)));
-            for (int i=1; i<size(); ++i) {
-                MPI_Send(&m_ctag, sizeof(std::uintptr_t), MPI_CHAR, i, random_msg_tag, mpi_comm());
-            }
-        }
-        else {
-            MPI_Status status;
-            MPI_Recv(&m_ctag, sizeof(std::uintptr_t), MPI_CHAR, 0, random_msg_tag, mpi_comm(), &status);
-            OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("MPI recv tag")
-                                        ,hpx::debug::hex<8>(m_ctag)));
-        }
+//        const int random_msg_tag = 65535;
+//        if (rank()==0) {
+//            m_ctag = reinterpret_cast<std::uintptr_t>(this);
+//            OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("MPI send tag")
+//                                        ,hpx::debug::hex<8>(m_ctag)));
+//            for (int i=1; i<size(); ++i) {
+//                MPI_Send(&m_ctag, sizeof(std::uintptr_t), MPI_CHAR, i, random_msg_tag, mpi_comm());
+//            }
+//        }
+//        else {
+//            MPI_Status status;
+//            MPI_Recv(&m_ctag, sizeof(std::uintptr_t), MPI_CHAR, 0, random_msg_tag, mpi_comm(), &status);
+//            OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("MPI recv tag")
+//                                        ,hpx::debug::hex<8>(m_ctag)));
+//        }
 
     }
 
@@ -272,11 +274,15 @@ class communicator_impl : public communicator_base<communicator_impl>
         // work through ready callbacks, which were pushed to the queue by other threads
         // (including this thread)
         m_recv_cb_queue.consume_all([](cb_ptr_t cb) {
+            OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("m_recv_cb_queue")
+                , "invoke"));
             cb->invoke();
             delete cb;
         });
 
         m_send_cb_queue.consume_all([](cb_ptr_t cb) {
+            OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("m_send_cb_queue")
+                , "invoke"));
             cb->invoke();
             delete cb;
         });

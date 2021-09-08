@@ -129,7 +129,7 @@ using namespace hpx;
 
 namespace oomph {
     // cppcheck-suppress ConfigurationNotChecked
-    static debug::enable_print<true> cnt_deb("CONTROL");
+    static debug::enable_print<false> cnt_deb("CONTROL");
     static debug::enable_print<true> cnt_err("CONTROL");
 }
 
@@ -655,7 +655,7 @@ namespace oomph { namespace libfabric {
 
             if (rootnode)
             {
-                OOMPH_DP_ONLY(cnt_err,
+                OOMPH_DP_ONLY(cnt_deb,
                     trace(debug::str<>("Fabric info"), "\n",
                         fi_tostr(fabric_info_, FI_TYPE_INFO)));
             }
