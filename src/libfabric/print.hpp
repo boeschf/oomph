@@ -81,7 +81,11 @@ extern char** environ;
 // Used to wrap function call parameters to prevent evaluation
 // when debugging is disabled
 #define OOMPH_DP_LAZY(printer, Expr) printer.eval([&] { return Expr; })
+#if (__cplusplus >= 201703L)
+#define OOMPH_DP_ONLY(printer, Expr) if constexpr (printer.is_enabled()) { printer.Expr; };
+#else
 #define OOMPH_DP_ONLY(printer, Expr) if (printer.is_enabled()) { printer.Expr; };
+#endif
 
 // ------------------------------------------------------------
 /// \cond NODETAIL
@@ -134,7 +138,8 @@ namespace hpx { namespace debug {
         void const* data_;
         friend std::ostream& operator<<(std::ostream& os, ptr const& d)
         {
-            os << d.data_;
+            os << std::right << "0x" << std::setfill('0') << std::setw(12)
+               << std::noshowbase << std::hex << reinterpret_cast<uintptr_t>(d.data_);
             return os;
         }
     };

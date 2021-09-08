@@ -129,8 +129,8 @@ using namespace hpx;
 
 namespace oomph {
     // cppcheck-suppress ConfigurationNotChecked
-    static debug::enable_print<true> cnt_deb("CONTROL");
-    static debug::enable_print<true> cnt_err("CONTROL");
+    static debug::enable_print<false> cnt_deb("CONTROL");
+    static debug::enable_print<true>  cnt_err("CONTROL");
 }
 
 /** @brief a class to return the number of progressed callbacks */
@@ -155,35 +155,64 @@ struct progress_status {
 namespace oomph { namespace libfabric {
 
     using region_type = oomph::libfabric::memory_handle;
+    using endpoint_context_pool = boost::lockfree::queue<endpoint_wrapper, boost::lockfree::fixed_sized<false>>;
+
+    template <typename Handle>
+    void fidclose(Handle fid, const char *msg)
+    {
+        OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("closing"), msg));
+        int ret = fi_close(fid);
+        if (ret == -FI_EBUSY) {
+            throw fabric_error(ret, "fi_close EBUSY");
+        }
+        else if (ret == FI_SUCCESS) {
+            return;
+        }
+        throw fabric_error(ret, "fi_close error");
+    }
 
     // when using thread local endpoints, we encapsulate things that
-    // can be created/destroyed by the wrapper destructor
+    // are needed to manage an endpoint
     struct endpoint_wrapper
     {
-        //private:
-        fid_ep* ep_;
-        fid_cq* rq_;
-        fid_cq* tq_;
+    private:
+        fid_ep* ep_ = nullptr;
+        fid_cq* rq_ = nullptr;
+        fid_cq* tq_ = nullptr;
+        const char *name_ = nullptr;
 
     public:
-        endpoint_wrapper(fid_ep* ep, fid_cq* rq, fid_cq* tq)
+        endpoint_wrapper() {}
+        endpoint_wrapper(fid_ep* ep, fid_cq* rq, fid_cq* tq, const char *name)
+            : ep_(ep)
+            , rq_(rq)
+            , tq_(tq)
+            , name_(name)
         {
-            ep_ = ep;
-            rq_ = rq;
-            tq_ = tq;
+            [[maybe_unused]] auto scp =
+                oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__, name_);
         }
 
-        ~endpoint_wrapper()
+        // to keep boost::lockfree happy, we need these
+        endpoint_wrapper(const endpoint_wrapper &ep) = default;
+        endpoint_wrapper & operator = (const endpoint_wrapper &ep) = default;
+
+        void cleanup()
         {
-            if (ep_)
-                fi_close(&ep_->fid);
-            if (rq_)
-                fi_close(&rq_->fid);
-            if (tq_)
-                fi_close(&tq_->fid);
-            ep_ = nullptr;
-            rq_ = nullptr;
-            tq_ = nullptr;
+            [[maybe_unused]] auto scp =
+                oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__, name_);
+            if (ep_) {
+                fidclose(&ep_->fid, "endpoint");
+                ep_ = nullptr;
+            }
+            if (rq_) {
+                fidclose(&rq_->fid, "RQ");
+                rq_ = nullptr;
+            }
+            if (tq_) {
+                fidclose(&tq_->fid, "TQ");
+                tq_ = nullptr;
+            }
         }
 
         inline fid_ep* get_ep()
@@ -196,10 +225,67 @@ namespace oomph { namespace libfabric {
         }
         inline fid_cq* get_tx_cq()
         {
-            return tq_; // (tq_ != nullptr ? tq_ : rq_);
+            return tq_;
+        }
+        inline const char* get_name()
+        {
+            return name_;
+        }
+
+    };
+
+    struct stack_endpoint {
+        endpoint_wrapper       endpoint_;
+        endpoint_context_pool *pool_;
+        //
+        stack_endpoint()
+            : endpoint_()
+            , pool_(nullptr) {}
+        //
+        stack_endpoint(fid_ep* ep, fid_cq* rq, fid_cq* tq, const char *name, endpoint_context_pool *pool)
+            : endpoint_(ep, rq, tq, name)
+            , pool_(pool) {}
+        //
+        stack_endpoint & operator = (stack_endpoint &&other) {
+            endpoint_ = std::move(other.endpoint_);
+            pool_ = std::exchange(other.pool_, nullptr);
+            return *this;
+        }
+
+        ~stack_endpoint() {
+            if (!pool_) return;
+            OOMPH_DP_ONLY(cnt_deb,
+                trace(debug::str<>("Scalable Ep"), "used push"
+                      , "ep", hpx::debug::ptr(get_ep())
+                      , "tx cq", hpx::debug::ptr(get_tx_cq())
+                      , "rx cq", hpx::debug::ptr(get_rx_cq())));
+            pool_->push(endpoint_);
+        }
+
+        inline fid_ep* get_ep()
+        {
+            return endpoint_.get_ep();
+        }
+
+        inline fid_cq* get_rx_cq()
+        {
+            return endpoint_.get_rx_cq();
+        }
+
+        inline fid_cq* get_tx_cq() {
+            return endpoint_.get_tx_cq();
         }
     };
 
+    struct endpoints_lifetime_manager {
+        // threadlocal endpoints
+        static inline thread_local stack_endpoint tl_tx_;
+        static inline thread_local stack_endpoint tl_stx_;
+        static inline thread_local stack_endpoint tl_srx_;
+        // non threadlocal endpoints, tx/rx
+        endpoint_wrapper ep_tx_;
+        endpoint_wrapper ep_rx_;
+    };
 
     // struct returned from polling functions
     // if any completions are handled (rma, send, recv),
@@ -235,21 +321,15 @@ namespace oomph { namespace libfabric {
         typedef std::mutex mutex_type;
         typedef std::lock_guard<mutex_type> scoped_lock;
 
-//        using heap_type = hwmalloc::heap<oomph::context_impl>;
-//        using heap_type = Heap;
-
     private:
-        // For threadlocal and scalable endpoints,
+        // For threadlocal/scalable endpoints,
         // we use a dedicated threadlocal endpoint wrapper
         // NB. inline static requires c++17
-        static inline thread_local std::unique_ptr<endpoint_wrapper> tl_tx_;
+        std::unique_ptr<endpoints_lifetime_manager> eps_;
 
-        // for non threadlocal endpoints, tx/rx
-        std::unique_ptr<endpoint_wrapper> ep_tx_;
-        std::unique_ptr<endpoint_wrapper> ep_rx_;
-
-        std::vector<fid_cq*> scalable_cq_array;
-        std::vector<fid_ep*> scalable_ep_array;
+        using endpoint_context_pool = boost::lockfree::queue<endpoint_wrapper, boost::lockfree::fixed_sized<false>>;
+        endpoint_context_pool tx_endpoints_;
+        endpoint_context_pool rx_endpoints_;
 
         struct fi_info* fabric_info_;
         struct fid_fabric* fabric_;
@@ -276,14 +356,20 @@ namespace oomph { namespace libfabric {
         performance_counter<int, true> sends_complete;
         performance_counter<int, true> recvs_complete;
 
+        void finvoke(const char *msg, const char *err, int ret) {
+            OOMPH_DP_ONLY(cnt_deb, trace(debug::str<>(msg)));
+            if (ret) throw fabric_error(ret, err);
+        }
+
     public:
         // --------------------------------------------------------------------
         // constructor gets info from device and sets up all necessary
         // maps, queues and server endpoint etc
         controller(/*oomph::context_impl* ctx, */std::string const& provider, std::string const& domain,
             MPI_Comm mpi_comm, int rank, int size, size_t threads)
-          : ep_tx_(nullptr)
-          , ep_rx_(nullptr)
+          : eps_(nullptr)
+          , tx_endpoints_(1)
+          , rx_endpoints_(1)
           , fabric_info_(nullptr)
           , fabric_(nullptr)
           , fabric_domain_(nullptr)
@@ -298,169 +384,195 @@ namespace oomph { namespace libfabric {
         {
             OOMPH_DP_ONLY(
                 cnt_deb, eval([]() { std::cout.setf(std::ios::unitbuf); }));
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
 
             endpoint_type_ =
                 static_cast<endpoint_type>(libfabric_endpoint_type());
             OOMPH_DP_ONLY(cnt_deb,
                 debug(debug::str<>("Endpoints"), LIBFABRIC_ENDPOINT_STRING));
 
-            open_fabric(provider, domain, rank == 0);
+            eps_ = std::make_unique<endpoints_lifetime_manager>();
 
-            // setup an endpoint for receiving messages
-            // rx endpoint is shared by all threads
-            here_ = locality("127.0.0.1", "7909");
-            auto ep_rx = new_endpoint_active(
-                fabric_domain_, fabric_info_, here_.fabric_data(), rank == 0);
+            OOMPH_DP_ONLY(cnt_deb,
+                debug(debug::str<>("Threads"), debug::dec<3>(threads)));
 
-            // create an address vector that will be bound to endpoints
-            av_ = create_address_vector(fabric_info_, size);
+            open_fabric(provider, domain, threads, rank == 0);
 
-            // bind address vector
-            bind_address_vector_to_endpoint(ep_rx, av_);
-
-            // create a completion queue for the rx endpoint
-            fabric_info_->rx_attr->op_flags |= FI_COMPLETION;
-            auto rx_cq = create_completion_queue(
-                fabric_domain_, fabric_info_->rx_attr->size);
-
-            // bind CQ to endpoint
-            bind_queue_to_endpoint(ep_rx, rx_cq, FI_RECV);
-
-#if defined(OOMPH_LIBFABRIC_SOCKETS) || defined(OOMPH_LIBFABRIC_TCP)
-            // it appears that the rx endpoint cannot be enabled if it does not
-            // have a Tx CQ (at least when using sockets), so we create a dummy
-            // Tx CQ and bind it just to stop libfabric from triggering an error.
-            // The tx_cq won't actually be used because the call to
-            // get endpoint will return another endpoint with the correct
-            // cq bound to it
-            bool fix_rx_enable_bug = true;
-#else
-            bool fix_rx_enable_bug = false;
-#endif
-            if (endpoint_type_ == endpoint_type::single)
+            // if we are using scalable endpoints, then setup tx/rx contexts
+            // we will us a single endpoint for all Tx/Rx contexts
+            if (endpoint_type_ == endpoint_type::scalable)
             {
-                // bind a tx cq to the rx endpoint for single endpoint type
-                // we need this with or without the bug mentioned above
-                auto tx_cq = bind_tx_queue_to_rx_endpoint(ep_rx, true);
-                ep_rx_ =
-                    std::make_unique<endpoint_wrapper>(ep_rx, rx_cq, tx_cq);
-            }
-            else if (endpoint_type_ == endpoint_type::multiple)
-            {
-                // libfabric sockets bug fix
-                auto a_cq = bind_tx_queue_to_rx_endpoint(ep_rx, fix_rx_enable_bug);
-                ep_rx_ =
-                    std::make_unique<endpoint_wrapper>(ep_rx, rx_cq, a_cq);
+                // create an address vector that will be bound to endpoints
+                av_ = create_address_vector(fabric_info_, size, threads);
+                OOMPH_DP_ONLY(cnt_deb,
+                    debug(debug::str<>("Created AV"), hpx::debug::ptr(av_)));
 
-                // create a completion queue for tx endpoint
-                fabric_info_->tx_attr->op_flags |= FI_COMPLETION;
-                auto tx_cq = create_completion_queue(
-                    fabric_domain_, fabric_info_->tx_attr->size);
-
-                // setup an endpoint for sending messages
-                // note that the CQ needs FI_RECV even though its a Tx cq to keep
-                // some providers happy as they trigger an error if an endpoint
-                // has no Rx cq attached (appears to be a progress related bug)
-                auto ep_tx = new_endpoint_active(
-                    fabric_domain_, fabric_info_, nullptr, rank == 0);
-                bind_queue_to_endpoint(ep_tx, tx_cq, FI_TRANSMIT | FI_RECV);
-                bind_address_vector_to_endpoint(ep_tx, av_);
-                enable_endpoint(ep_tx);
-
-                // combine endpoints and CQ into wrapper for convenience
-                ep_tx_ = std::make_unique<endpoint_wrapper>(
-                    ep_tx, nullptr, tx_cq);
-            }
-            else if (endpoint_type_ == endpoint_type::threadlocal)
-            {
-                // libfabric sockets bug fix
-                auto a_cq = bind_tx_queue_to_rx_endpoint(ep_rx, fix_rx_enable_bug);
-                ep_rx_ =
-                    std::make_unique<endpoint_wrapper>(ep_rx, rx_cq, a_cq);
-
-                // The actual threadlocal Tx endpoint + CQ creation
-                // is deferred until it is requested by a commmunication thread
-            }
-            else if (endpoint_type_ == endpoint_type::scalable)
-            {
-                // libfabric sockets bug fix
-                auto a_cq = bind_tx_queue_to_rx_endpoint(ep_rx, fix_rx_enable_bug);
-                ep_rx_ =
-                    std::make_unique<endpoint_wrapper>(ep_rx, rx_cq, a_cq);
-
-                // create a completion queue for tx endpoint
-                fabric_info_->tx_attr->op_flags |= FI_COMPLETION;
-                auto tx_cq = create_completion_queue(
-                    fabric_domain_, fabric_info_->tx_attr->size);
-
-                // setup a scalable endpoint for sending messages
-                auto ep_tx = new_endpoint_scalable(
-                    fabric_domain_, fabric_info_, threads);
-                if (!ep_tx)
+                // thread slots might not be same as what we asked for
+                size_t threads_allocated = 0;
+                auto ep_sx = new_endpoint_scalable(
+                    fabric_domain_, fabric_info_, threads, threads_allocated);
+                if (!ep_sx)
                     throw fabric_error(FI_EOTHER, "fi_scalable endpoint creation failed");
 
                 OOMPH_DP_ONLY(cnt_deb,
                     trace(debug::str<>("scalable endpoint ok"),
-                        "Contexts required", debug::dec<4>(threads)));
+                        "Contexts allocated", debug::dec<4>(threads_allocated)));
 
-                OOMPH_DP_ONLY(cnt_deb,
-                    trace(debug::str<>("fi_scalable_ep_bind AV")));
-                int ret = fi_scalable_ep_bind(ep_tx, &av_->fid, 0);
-                if (ret)
-                    throw fabric_error(ret, "fi_scalable_ep_bind");
-
-                scalable_cq_array.resize(threads, nullptr);
-                scalable_ep_array.resize(threads, nullptr);
-
-                for (unsigned int i = 0; i < threads; i++)
+                // prepare the stack for insertions
+                tx_endpoints_.reserve(threads_allocated);
+                rx_endpoints_.reserve(threads_allocated);
+                //
+                for (unsigned int i = 0; i < threads_allocated; i++)
                 {
-                    OOMPH_DP_ONLY(cnt_deb,
-                        trace(debug::str<>("fi_tx_context"),
-                            debug::dec<4>(i)));
-                    int ret = fi_tx_context(
-                        ep_tx, i, NULL, &scalable_ep_array[i], NULL);
-                    if (ret)
-                        throw fabric_error(ret, "fi_tx_context");
+
+                    // For threadlocal/scalable endpoints, tx/rx resources
+                    fid_ep *scalable_ep_tx;
+                    fid_cq *scalable_cq_tx;
+                    fid_ep *scalable_ep_rx;
+                    fid_cq *scalable_cq_rx;
+
+                    // Tx context setup
+                    finvoke("create tx context", "fi_tx_context", fi_tx_context(
+                        ep_sx, i, NULL, &scalable_ep_tx, NULL));
 
                     OOMPH_DP_ONLY(cnt_deb,
-                        trace(debug::str<>("create_completion_queue"),
-                            debug::dec<4>(i)));
-                    scalable_cq_array[i] = create_completion_queue(
+                        trace(debug::str<>("create CQ"), "tx", debug::dec<4>(i)));
+                    scalable_cq_tx = create_completion_queue(
                         fabric_domain_, fabric_info_->tx_attr->size);
+
+                    OOMPH_DP_ONLY(cnt_deb,
+                        trace(debug::str<>("fi_scalable_ep_bind"), "tx", debug::dec<4>(i)));
+                    bind_queue_to_endpoint(scalable_ep_tx, scalable_cq_tx, FI_TRANSMIT);
+
+                    OOMPH_DP_ONLY(cnt_deb,
+                        trace(debug::str<>("enable_endpoint"), "tx", debug::dec<4>(i)));
+                    enable_endpoint(scalable_ep_tx);
+
+                    endpoint_wrapper tx(scalable_ep_tx, nullptr, scalable_cq_tx, "Tx scalable");
+                    OOMPH_DP_ONLY(cnt_deb,
+                                  trace(debug::str<>("Scalable Ep"), "initial tx push"
+                                        , "ep", hpx::debug::ptr(tx.get_ep())
+                                        , "tx cq", hpx::debug::ptr(tx.get_tx_cq())
+                                        , "rx cq", hpx::debug::ptr(tx.get_rx_cq())));
+                    tx_endpoints_.push(tx);
+
+                    // Rx contexts
+                    finvoke("create rx context", "fi_rx_context", fi_rx_context(
+                        ep_sx, i, NULL, &scalable_ep_rx, NULL));
+
+                    OOMPH_DP_ONLY(cnt_deb,
+                        trace(debug::str<>("create CQ"), "rx", debug::dec<4>(i)));
+                    scalable_cq_rx = create_completion_queue(
+                        fabric_domain_, fabric_info_->rx_attr->size);
+
+                    OOMPH_DP_ONLY(cnt_deb,
+                        trace(debug::str<>("fi_scalable_ep_bind"), "rx", debug::dec<4>(i)));
+                    bind_queue_to_endpoint(scalable_ep_rx, scalable_cq_rx, FI_RECV);
+                    OOMPH_DP_ONLY(cnt_deb,
+                        trace(debug::str<>("enable_endpoint"), "rx", debug::dec<4>(i)));
+                    enable_endpoint(scalable_ep_rx);
+
+                    endpoint_wrapper rx(scalable_ep_rx, scalable_cq_rx, nullptr, "Rx scalable");
+                    OOMPH_DP_ONLY(cnt_deb,
+                                  trace(debug::str<>("Scalable Ep"), "initial rx push"
+                                        , "ep", hpx::debug::ptr(rx.get_ep())
+                                        , "tx cq", hpx::debug::ptr(rx.get_tx_cq())
+                                        , "rx cq", hpx::debug::ptr(rx.get_rx_cq())));
+                    rx_endpoints_.push(rx);
                 }
 
-                for (unsigned int i = 0; i < threads; i++)
-                {
-                    OOMPH_DP_ONLY(cnt_deb,
-                        trace(debug::str<>("fi_scalable_ep_bind"),
-                            debug::dec<4>(i)));
-                    // (RECV is not needed, but fixes libfabric bug)
-                    bind_queue_to_endpoint(scalable_ep_array[i],
-                        scalable_cq_array[i], FI_TRANSMIT);
-                    OOMPH_DP_ONLY(cnt_deb,
-                        trace(debug::str<>("enable_endpoint"),
-                            debug::dec<4>(i)));
-                    enable_endpoint(scalable_ep_array[i]);
-                }
-                ep_rx_ = std::make_unique<endpoint_wrapper>(
-                    ep_rx, rx_cq, nullptr);
+                finvoke("fi_scalable_ep_bind AV", "fi_scalable_ep_bind", fi_scalable_ep_bind(ep_sx, &av_->fid, 0));
+
+                eps_->ep_rx_ =
+                    endpoint_wrapper(ep_sx, nullptr, nullptr, "RX scalable");
             }
+            else
+            {
+                // create an address vector that will be bound to endpoints
+                av_ = create_address_vector(fabric_info_, size, 0);
+                OOMPH_DP_ONLY(cnt_deb,
+                    debug(debug::str<>("Created AV"), hpx::debug::ptr(av_)));
 
+                // setup an endpoint for receiving messages
+                // rx endpoint is shared by all threads
+                here_ = locality("127.0.0.1", "7909");
+                auto ep_rx = new_endpoint_active(
+                    fabric_domain_, fabric_info_, here_.fabric_data(), rank == 0);
+
+                // bind address vector
+                bind_address_vector_to_endpoint(ep_rx, av_);
+
+                // create a completion queue for the rx endpoint
+                fabric_info_->rx_attr->op_flags |= FI_COMPLETION;
+                auto rx_cq = create_completion_queue(
+                    fabric_domain_, fabric_info_->rx_attr->size);
+
+                // bind CQ to endpoint
+                bind_queue_to_endpoint(ep_rx, rx_cq, FI_RECV);
+
+#if defined(OOMPH_LIBFABRIC_SOCKETS) || defined(OOMPH_LIBFABRIC_TCP) || defined(OOMPH_LIBFABRIC_VERBS)
+                // it appears that the rx endpoint cannot be enabled if it does not
+                // have a Tx CQ (at least when using sockets), so we create a dummy
+                // Tx CQ and bind it just to stop libfabric from triggering an error.
+                // The tx_cq won't actually be used because the call to
+                // get endpoint will return another endpoint with the correct
+                // cq bound to it
+                bool fix_rx_enable_bug = true;
+#else
+                bool fix_rx_enable_bug = false;
+#endif
+                if (endpoint_type_ == endpoint_type::single)
+                {
+                    // bind a tx cq to the rx endpoint for single endpoint type
+                    // we need this with or without the bug mentioned above
+                    auto tx_cq = bind_tx_queue_to_rx_endpoint(ep_rx, true);
+                    eps_->ep_rx_ = endpoint_wrapper(ep_rx, rx_cq, tx_cq, "RX single");
+                }
+                else if (endpoint_type_ == endpoint_type::multiple)
+                {
+                    // libfabric sockets bug fix
+                    auto a_cq = bind_tx_queue_to_rx_endpoint(ep_rx, fix_rx_enable_bug);
+                    eps_->ep_rx_ = endpoint_wrapper(ep_rx, rx_cq, a_cq, "RX multiple");
+
+                    // create a completion queue for tx endpoint
+                    fabric_info_->tx_attr->op_flags |= FI_COMPLETION;
+                    auto tx_cq = create_completion_queue(
+                        fabric_domain_, fabric_info_->tx_attr->size);
+
+                    // setup an endpoint for sending messages
+                    // note that the CQ needs FI_RECV even though its a Tx cq to keep
+                    // some providers happy as they trigger an error if an endpoint
+                    // has no Rx cq attached (appears to be a progress related bug)
+                    auto ep_tx = new_endpoint_active(
+                        fabric_domain_, fabric_info_, nullptr, rank == 0);
+                    bind_queue_to_endpoint(ep_tx, tx_cq, FI_TRANSMIT | FI_RECV);
+                    bind_address_vector_to_endpoint(ep_tx, av_);
+                    enable_endpoint(ep_tx);
+
+                    // combine endpoints and CQ into wrapper for convenience
+                    eps_->ep_tx_ = endpoint_wrapper(ep_tx, nullptr, tx_cq, "TX multiple");
+                }
+                else if (endpoint_type_ == endpoint_type::threadlocal)
+                {
+                    // libfabric sockets bug fix
+                    auto a_cq = bind_tx_queue_to_rx_endpoint(ep_rx, fix_rx_enable_bug);
+                    eps_->ep_rx_ = endpoint_wrapper(ep_rx, rx_cq, a_cq, "RX threadlocal");
+                }
+            }
             // once enabled we can get the address
-            enable_endpoint(ep_rx_->get_ep());
-            here_ = get_endpoint_address(&ep_rx_->get_ep()->fid);
+            enable_endpoint(eps_->ep_rx_.get_ep());
+            here_ = get_endpoint_address(&eps_->ep_rx_.get_ep()->fid);
 
             // Broadcast address of all endpoints to all ranks
             // and fill address vector with info
-            exchange_addresses(mpi_comm, rank, size);
+            exchange_addresses(av_, mpi_comm, rank, size);
         }
 
         // --------------------------------------------------------------------
         // clean up all resources
         ~controller()
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
             unsigned int messages_handled_ = 0;
             unsigned int rma_reads_ = 0;
             unsigned int recv_deletes_ = 0;
@@ -472,32 +584,44 @@ namespace oomph { namespace libfabric {
                     debug::dec<>(recv_deletes_), "deletes error",
                     debug::dec<>(messages_handled_ - recv_deletes_)));
 
-            OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("closing"), "fabric"));
-            if (fabric_)
-                fi_close(&fabric_->fid);
-            OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("closing"), "ep_active"));
+            tx_endpoints_.consume_all([](endpoint_wrapper &ep){
+                    ep.cleanup();
+            });
+
+            rx_endpoints_.consume_all([](endpoint_wrapper &ep){
+                    ep.cleanup();
+            });
+
+            // No cleanup threadlocals : done by consume_all cleanup above
+            // eps_->tl_tx_.endpoint_.cleanup();
+            // eps_->tl_stx_.endpoint_.cleanup();
+            // eps_->tl_srx_.endpoint_.cleanup();
+
+            // non threadlocal endpoints, tx/rx
+            eps_->ep_tx_.cleanup();
+            eps_->ep_rx_.cleanup();
 
             // Cleanup endpoints
-            ep_rx_.reset(nullptr);
-            ep_tx_.reset(nullptr);
+            eps_.reset(nullptr);
 
-            OOMPH_DP_ONLY(
-                cnt_deb, debug(debug::str<>("closing"), "fabric_domain"));
-            if (fabric_domain_)
-                fi_close(&fabric_domain_->fid);
-            OOMPH_DP_ONLY(
-                cnt_deb, debug(debug::str<>("closing"), "ep_shared_rx_cxt"));
+            // delete adddress vector
+            fidclose(&av_->fid, "Address Vector");
+
+            fidclose(&fabric_domain_->fid, "Domain");
+
+            fidclose(&fabric_->fid, "Fabric");
 
             // clean up
-            OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("freeing fabric_info"));
-                         fi_freeinfo(fabric_info_));
+            OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("freeing fabric_info")));
+
+            fi_freeinfo(fabric_info_);
         }
 
         // --------------------------------------------------------------------
         // send address to rank 0 and receive array of all localities
-        void MPI_exchange_localities(MPI_Comm comm, int rank, int size)
+        void MPI_exchange_localities(fid_av* av, MPI_Comm comm, int rank, int size)
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
             std::vector<char> localities(size * locality_defs::array_size, 0);
             //
             if (rank > 0)
@@ -568,16 +692,16 @@ namespace oomph { namespace libfabric {
                 int offset = i * locality_defs::array_size;
                 memcpy(temp.fabric_data_writable(), &localities[offset],
                     locality_defs::array_size);
-                insert_address(temp);
+                insert_address(av, temp);
             }
         }
 
         // --------------------------------------------------------------------
         // initialize the basic fabric/domain/name
         void open_fabric(std::string const& provider, std::string const& domain,
-            bool rootnode)
+            int threads, bool rootnode)
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
 
             struct fi_info* fabric_hints_ = fi_allocinfo();
             if (!fabric_hints_)
@@ -589,8 +713,9 @@ namespace oomph { namespace libfabric {
                 debug(debug::str<>("Here locality"), iplocality(here_)));
 
 #if defined(OOMPH_LIBFABRIC_SOCKETS) || defined(OOMPH_LIBFABRIC_TCP)
-
             fabric_hints_->addr_format = FI_SOCKADDR_IN;
+//#elif defined(OOMPH_LIBFABRIC_VERBS)
+//            fabric_hints_->addr_format = FI_SOCKADDR_IB;
 #endif
 
             fabric_hints_->caps =
@@ -598,6 +723,11 @@ namespace oomph { namespace libfabric {
 
             fabric_hints_->mode = FI_CONTEXT /*| FI_MR_LOCAL*/;
             if (provider.c_str() == std::string("tcp"))
+            {
+                fabric_hints_->fabric_attr->prov_name =
+                    strdup(std::string(provider + ";ofi_rxm").c_str());
+            }
+            else if (provider.c_str() == std::string("verbs"))
             {
                 fabric_hints_->fabric_attr->prov_name =
                     strdup(std::string(provider + ";ofi_rxm").c_str());
@@ -632,8 +762,15 @@ namespace oomph { namespace libfabric {
             OOMPH_DP_ONLY(cnt_deb,
                 debug(debug::str<>("progress"), LIBFABRIC_PROGRESS_STRING));
 
-            // Enable thread safe mode (Does not work with psm2 provider)
-            fabric_hints_->domain_attr->threading = FI_THREAD_SAFE;
+            if (threads>1) {
+                // Enable thread safe mode (Does not work with psm2 provider)
+                // fabric_hints_->domain_attr->threading = FI_THREAD_SAFE;
+                fabric_hints_->domain_attr->threading = FI_THREAD_FID;
+            }
+            else {
+                // we serialize everything
+                fabric_hints_->domain_attr->threading = FI_THREAD_DOMAIN;
+            }
 
             // Enable resource management
             fabric_hints_->domain_attr->resource_mgmt = FI_RM_ENABLED;
@@ -647,6 +784,7 @@ namespace oomph { namespace libfabric {
                 debug(debug::str<>("get fabric info"), "FI_VERSION",
                     debug::dec(LIBFABRIC_FI_VERSION_MAJOR),
                     debug::dec(LIBFABRIC_FI_VERSION_MINOR)));
+
             int ret = fi_getinfo(FI_VERSION(LIBFABRIC_FI_VERSION_MAJOR,
                                      LIBFABRIC_FI_VERSION_MINOR),
                 nullptr, nullptr, flags, fabric_hints_, &fabric_info_);
@@ -655,7 +793,7 @@ namespace oomph { namespace libfabric {
 
             if (rootnode)
             {
-                OOMPH_DP_ONLY(cnt_err,
+                OOMPH_DP_ONLY(cnt_deb,
                     trace(debug::str<>("Fabric info"), "\n",
                         fi_tostr(fabric_info_, FI_TYPE_INFO)));
             }
@@ -682,7 +820,7 @@ namespace oomph { namespace libfabric {
 #ifdef OOMPH_LIBFABRIC_GNI
             {
                 [[maybe_unused]] auto scp =
-                    oomph::cnt_deb.scope(this, "GNI memory registration block");
+                    oomph::cnt_deb.scope(hpx::debug::ptr(this), "GNI memory registration block");
 /*
 #ifdef GHEX_GNI_UDREG
                 // option 1)
@@ -707,7 +845,7 @@ namespace oomph { namespace libfabric {
                 int32_t udreg_limit = 1024;
                 OOMPH_DP_ONLY(cnt_deb,
                     debug(debug::str<>("setting GNI_MR_UDREG_REG_LIMIT ="),
-                        debug::dec<4>(1024)));
+                        debug::hex<4>(1024)));
                 ret = _set_check_domain_op_value<int32_t>(
                     GNI_MR_UDREG_REG_LIMIT, &udreg_limit, "GNI_MR_UDREG_REG_LIMIT");
                 if (ret)
@@ -732,14 +870,14 @@ namespace oomph { namespace libfabric {
         int _set_check_domain_op_value(
             [[maybe_unused]] int op, [[maybe_unused]] const T* value, const char *info)
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
             struct fi_gni_ops_domain* gni_domain_ops;
 
             int ret = fi_open_ops(&fabric_domain_->fid, FI_GNI_DOMAIN_OPS_1, 0,
                 (void**) &gni_domain_ops, nullptr);
 
             OOMPH_DP_ONLY(cnt_deb,
-                debug(debug::str<>("gni open ops"), (ret==0 ? "OK" : "FAIL"), debug::ptr(gni_domain_ops)));
+                debug(debug::str<>("gni open ops"), (ret==0 ? "OK" : "FAIL"), hpx::debug::ptr(gni_domain_ops)));
 
             // if open was ok, then set value
             if (ret==0) {
@@ -767,30 +905,26 @@ namespace oomph { namespace libfabric {
             // don't allow multiple threads to call endpoint create at the same time
             scoped_lock lock(controller_mutex_);
 
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
             OOMPH_DP_ONLY(cnt_deb,
                 debug(debug::str<>("Got info mode"),
                     (info->mode & FI_NOTIFY_FLAGS_ONLY)));
-
+/*
             OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("fi_dupinfo")));
             struct fi_info* hints = fi_dupinfo(info);
             if (!hints)
                 throw fabric_error(0, "fi_dupinfo");
+
 #if defined(OOMPH_LIBFABRIC_SOCKETS) || defined(OOMPH_LIBFABRIC_TCP)
             if (rootnode && src_addr)
             {
-                /* Set src addr hints (FI_SOURCE must not be set in that case) */
-                //                free(hints->src_addr);
+                OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("Allocating"), "socket_data"));
                 struct sockaddr_in* socket_data =
                     (struct sockaddr_in*) malloc(sizeof(struct sockaddr_in));
                 memcpy(socket_data, src_addr, locality_defs::array_size);
                 hints->addr_format = FI_SOCKADDR_IN;
                 hints->src_addr = socket_data;
                 hints->src_addrlen = sizeof(struct sockaddr_in);
-            }
-            else
-            {
-                //                hints->src_addr    = nullptr;
             }
 #endif
             int flags = 0;
@@ -821,31 +955,38 @@ namespace oomph { namespace libfabric {
             //            }
 
             struct fid_ep* ep;
-            ret = fi_endpoint(domain, new_hints, &ep, nullptr);
+            int ret = fi_endpoint(domain, info, &ep, nullptr);
             if (ret)
                 throw fabric_error(ret,
                     "fi_endpoint (too many threadlocal "
                     "endpoints?)");
-
+/*
             if (hints)
             {
                 // Prevent fi_freeinfo() from freeing src_add
-                if (src_addr)
+                if (hints->src_addr) {
+                    free(hints->src_addr);
                     hints->src_addr = NULL;
-                //                fi_freeinfo(hints);
+                }
+                fi_freeinfo(hints);
                 // free(socket_data);
             }
+            if (new_hints)
+            {
+                fi_freeinfo(new_hints);
+            }
+*/
             return ep;
         }
 
         // --------------------------------------------------------------------
         struct fid_ep* new_endpoint_scalable(
-            struct fid_domain* domain, struct fi_info* info, int threads)
+            struct fid_domain* domain, struct fi_info* info, size_t threads, size_t &threads_allocated)
         {
             // don't allow multiple threads to call endpoint create at the same time
             scoped_lock lock(controller_mutex_);
 
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
 
             OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("fi_dupinfo")));
             struct fi_info* hints = fi_dupinfo(info);
@@ -861,17 +1002,28 @@ namespace oomph { namespace libfabric {
                 throw fabric_error(ret, "fi_getinfo");
 
             // Check the optimal number of TX and RX contexts supported by the provider
-            int context_count =
-                std::min(threads, int(new_hints->domain_attr->tx_ctx_cnt));
-            // ctx_cnt = MIN(threads, fabric_hints_->domain_attr->rx_ctx_cnt);
-            if (context_count < threads || context_count <= 1)
-            {
-                OOMPH_DP_ONLY(cnt_err,
-                    error(debug::str<>("scalable endpoint unsupported")));
-                return nullptr;
-            }
+            size_t context_count = std::min(new_hints->domain_attr->tx_ctx_cnt, new_hints->domain_attr->rx_ctx_cnt);
+            context_count = std::min(context_count, threads);
+            OOMPH_DP_ONLY(cnt_deb, trace(debug::str<>("scalable endpoint")
+                  , "Threads", debug::dec<3>(threads)
+                  , "tx_ctx_cnt", debug::dec<3>(new_hints->domain_attr->tx_ctx_cnt)
+                  , "rx_ctx_cnt", debug::dec<3>(new_hints->domain_attr->rx_ctx_cnt)
+                  , "context_count", debug::dec<3>(context_count)
+                  ));
+
+//            if (context_count < threads || context_count <= 1)
+//            {
+//                OOMPH_DP_ONLY(cnt_err,
+//                    error(debug::str<>("scalable endpoint unsupported")
+//                          , "Threads", debug::dec<3>(threads)
+//                          , "tx_ctx_cnt", debug::dec<3>(new_hints->domain_attr->tx_ctx_cnt)
+//                          , "context_count", debug::dec<3>(context_count)
+//                          ));
+//                return nullptr;
+//            }
+            threads_allocated = context_count;
             new_hints->ep_attr->tx_ctx_cnt = context_count;
-            new_hints->ep_attr->rx_ctx_cnt = 0;
+            new_hints->ep_attr->rx_ctx_cnt = context_count;
 
             struct fid_ep* ep;
             ret = fi_scalable_ep(domain, new_hints, &ep, nullptr);
@@ -883,103 +1035,127 @@ namespace oomph { namespace libfabric {
         }
 
         // --------------------------------------------------------------------
-        endpoint_wrapper* get_rx_endpoint()
+        endpoint_wrapper& get_rx_endpoint()
         {
             static auto rx = cnt_deb.make_timer(1, debug::str<>("get_rx_endpoint"));
-            cnt_deb.timed(rx);
+            OOMPH_DP_ONLY(cnt_deb,timed(rx));
 
-            return ep_rx_.get();
+            if (endpoint_type_ == endpoint_type::scalable)
+            {
+                if (eps_->tl_srx_.get_ep() == nullptr)
+                {
+                    endpoint_wrapper ep;
+                    bool ok = rx_endpoints_.pop(ep);
+                    if (!ok) {
+                        OOMPH_DP_ONLY(cnt_deb,
+                                      error(debug::str<>("Scalable Ep"), "pop rx"
+                                            , "ep", hpx::debug::ptr(ep.get_ep())
+                                            , "tx cq", hpx::debug::ptr(ep.get_tx_cq())
+                                            , "rx cq", hpx::debug::ptr(ep.get_rx_cq())));
+                        throw std::runtime_error("rx endpoint wrapper pop fail");
+                    }
+                    eps_->tl_srx_ = stack_endpoint(
+                                ep.get_ep(), ep.get_rx_cq(), ep.get_tx_cq(), ep.get_name(), &rx_endpoints_);
+                    OOMPH_DP_ONLY(cnt_deb,
+                                  trace(debug::str<>("Scalable Ep"), "pop rx"
+                                        , "ep", hpx::debug::ptr(eps_->tl_srx_.get_ep())
+                                        , "tx cq", hpx::debug::ptr(eps_->tl_srx_.get_tx_cq())
+                                        , "rx cq", hpx::debug::ptr(eps_->tl_srx_.get_rx_cq())));
+                }
+                return eps_->tl_srx_.endpoint_;
+            }
+            // otherwise just return the normal Rx endpoint
+            return eps_->ep_rx_;
         }
 
         // --------------------------------------------------------------------
-        endpoint_wrapper* get_tx_endpoint()
+        endpoint_wrapper& get_tx_endpoint()
         {
             static auto tx = cnt_deb.make_timer(1, debug::str<>("get_tx_endpoint"));
-            cnt_deb.timed(tx);
+            OOMPH_DP_ONLY(cnt_deb, timed(tx));
 
-            if (endpoint_type_ == endpoint_type::threadlocal)
+            if (endpoint_type_ == endpoint_type::scalable)
             {
-                if (tl_tx_ == nullptr)
+                if (eps_->tl_stx_.get_ep() == nullptr)
                 {
-                    [[maybe_unused]] auto scp =
-                        oomph::cnt_deb.scope(this, __func__, "threadlocal", std::this_thread::get_id());
-
-                    // create a completion queue for tx endpoint
-                    fabric_info_->tx_attr->op_flags |= FI_COMPLETION;
-                    auto tx_cq = create_completion_queue(
-                        fabric_domain_, fabric_info_->tx_attr->size);
-
-                    // setup an endpoint for sending messages
-                    // note that the CQ needs FI_RECV even though its a Tx cq to keep
-                    // some providers happy as they trigger an error if an endpoint
-                    // has no Rx cq attached (progress bug)
-                    auto ep_tx = new_endpoint_active(
-                        fabric_domain_, fabric_info_, nullptr, false);
-                    bind_queue_to_endpoint(ep_tx, tx_cq, FI_TRANSMIT | FI_RECV);
-                    bind_address_vector_to_endpoint(ep_tx, av_);
-                    enable_endpoint(ep_tx);
-
-                    // init a threadlocal endpoint wrapper
-                    tl_tx_ = std::make_unique<endpoint_wrapper>(
-                        ep_tx, nullptr, tx_cq);
-                }
-                static auto tx2 = cnt_deb.make_timer(1, debug::str<>("get_tx_endpoint"), std::this_thread::get_id(), debug::ptr(tl_tx_->get_ep()));
-                cnt_deb.timed(tx2);
-                return tl_tx_.get();
-            }
-            else if (endpoint_type_ == endpoint_type::scalable)
-            {
-                if (tl_tx_ == nullptr)
-                {
-                    [[maybe_unused]] auto scp =
-                        oomph::cnt_deb.scope(this, __func__, "threadlocal", std::this_thread::get_id());
-
-                    static std::atomic<int> thread_counter(0);
-                    // get a unique index for this thread
-                    unsigned int endpoint_index = thread_counter++;
-                    if (endpoint_index > scalable_ep_array.size())
-                    {
-                        OOMPH_DP_ONLY(
-                            cnt_err, error(debug::str<>("Endpoint overflow")));
-                        endpoint_index =
-                            endpoint_index % scalable_ep_array.size();
+                    endpoint_wrapper ep;
+                    bool ok = tx_endpoints_.pop(ep);
+                    if (!ok) {
+                        OOMPH_DP_ONLY(cnt_deb,
+                                      error(debug::str<>("Scalable Ep"), "pop tx"
+                                            , "ep", hpx::debug::ptr(ep.get_ep())
+                                            , "tx cq", hpx::debug::ptr(ep.get_tx_cq())
+                                            , "rx cq", hpx::debug::ptr(ep.get_rx_cq())));
+                        throw std::runtime_error("tx endpoint wrapper pop fail");
                     }
-                    auto ep = scalable_ep_array[endpoint_index];
-                    auto cq = scalable_cq_array[endpoint_index];
-                    tl_tx_ =
-                        std::make_unique<endpoint_wrapper>(ep, nullptr, cq);
+                    eps_->tl_stx_ = stack_endpoint(
+                                ep.get_ep(), ep.get_rx_cq(), ep.get_tx_cq(), ep.get_name(), &tx_endpoints_);
                     OOMPH_DP_ONLY(cnt_deb,
-                        trace(debug::str<>("Make endpoint scalable"),
-                            debug::dec<3>(endpoint_index), "ep", debug::ptr(ep),
-                            "cq", debug::ptr(cq)));
+                                  trace(debug::str<>("Scalable Ep"), "pop tx"
+                                        , "ep", hpx::debug::ptr(eps_->tl_stx_.get_ep())
+                                        , "tx cq", hpx::debug::ptr(eps_->tl_stx_.get_tx_cq())
+                                        , "rx cq", hpx::debug::ptr(eps_->tl_stx_.get_rx_cq())));
                 }
-                else
+                return eps_->tl_stx_.endpoint_;
+            }
+            else if (endpoint_type_ == endpoint_type::threadlocal)
+            {
+                if (eps_->tl_tx_.get_ep() == nullptr)
                 {
-                    auto ptr = tl_tx_.get();
-                    OOMPH_DP_ONLY(cnt_deb,
-                        trace(debug::str<>("Return endpoint scalable"), "ptr",
-                            debug::ptr(ptr), "ep", debug::ptr(ptr->ep_), "cq",
-                            debug::ptr(ptr->tq_)));
+                    [[maybe_unused]] auto scp =
+                        oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__, "threadlocal");
+                    endpoint_wrapper ep;
+                    bool ok = tx_endpoints_.pop(ep);
+                    if (!ok) {
+                        // create a completion queue for tx endpoint
+                        fabric_info_->tx_attr->op_flags |= FI_COMPLETION;
+                        auto tx_cq = create_completion_queue(
+                            fabric_domain_, fabric_info_->tx_attr->size);
+
+                        // setup an endpoint for sending messages
+                        // note that the CQ needs FI_RECV even though its a Tx cq to keep
+                        // some providers happy as they trigger an error if an endpoint
+                        // has no Rx cq attached (progress bug)
+                        auto ep_tx = new_endpoint_active(
+                            fabric_domain_, fabric_info_, nullptr, false);
+                        bind_queue_to_endpoint(ep_tx, tx_cq, FI_TRANSMIT | FI_RECV);
+                        bind_address_vector_to_endpoint(ep_tx, av_);
+                        enable_endpoint(ep_tx);
+                        // set threadlocal endpoint wrapper
+                        OOMPH_DP_ONLY(cnt_deb,
+                            trace(debug::str<>("Threadlocal Ep"), "create Tx"
+                                  , "ep", hpx::debug::ptr(ep_tx)
+                                  , "tx cq", hpx::debug::ptr(tx_cq)
+                                  , "rx cq", hpx::debug::ptr(nullptr)));
+                        eps_->tl_tx_ = stack_endpoint(ep_tx, nullptr, tx_cq, "TX (TL) threadlocal", &tx_endpoints_);
+                    }
+                    else {
+                        // set threadlocal endpoint wrapper
+                        eps_->tl_tx_ = stack_endpoint(ep.get_ep(), nullptr, ep.get_tx_cq(), "TX (TL) threadlocal", &tx_endpoints_);
+                        OOMPH_DP_ONLY(cnt_deb,
+                            trace(debug::str<>("Threadlocal Ep"), "pop Tx"
+                                  , "ep", hpx::debug::ptr(eps_->tl_tx_.get_ep())
+                                  , "tx cq", hpx::debug::ptr(eps_->tl_tx_.get_tx_cq())
+                                  , "rx cq", hpx::debug::ptr(eps_->tl_tx_.get_rx_cq())));
+                    }
                 }
-                static auto tx2 = cnt_deb.make_timer(1, debug::str<>("get_tx_endpoint"), std::this_thread::get_id(), debug::ptr(tl_tx_->get_ep()));
-                cnt_deb.timed(tx2);
-                return tl_tx_.get();
+                return eps_->tl_tx_.endpoint_;
             }
             else if (endpoint_type_ == endpoint_type::multiple)
             {
                 [[maybe_unused]] auto scp =
-                    oomph::cnt_deb.scope(this, __func__, "separate_endpoints_");
-                return ep_tx_.get();
+                    oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__, "separate_endpoints_");
+                return eps_->ep_tx_;
             }
             // shared tx/rx endpoint
-            return ep_rx_.get();
+            return eps_->ep_rx_;
         }
 
         // --------------------------------------------------------------------
         void bind_address_vector_to_endpoint(
             struct fid_ep* endpoint, struct fid_av* av)
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
 
             OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("Binding AV")));
             int ret = fi_ep_bind(endpoint, &av->fid, 0);
@@ -991,7 +1167,7 @@ namespace oomph { namespace libfabric {
         void bind_queue_to_endpoint(
             struct fid_ep* endpoint, struct fid_cq*& cq, uint32_t cqtype)
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
 
             OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("Binding CQ")));
             int ret = fi_ep_bind(endpoint, &cq->fid, cqtype);
@@ -1002,7 +1178,7 @@ namespace oomph { namespace libfabric {
         // --------------------------------------------------------------------
         fid_cq *bind_tx_queue_to_rx_endpoint(struct fid_ep* ep, bool needed)
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
             if (needed) {
                 fabric_info_->tx_attr->op_flags |= FI_COMPLETION;
                 fid_cq *tx_cq = create_completion_queue(
@@ -1017,10 +1193,10 @@ namespace oomph { namespace libfabric {
         // --------------------------------------------------------------------
         void enable_endpoint(struct fid_ep* endpoint)
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
 
             OOMPH_DP_ONLY(cnt_deb,
-                debug(debug::str<>("Enabling endpoint"), debug::ptr(endpoint)));
+                debug(debug::str<>("Enabling endpoint"), hpx::debug::ptr(endpoint)));
             int ret = fi_enable(endpoint);
             if (ret)
                 throw fabric_error(ret, "fi_enable");
@@ -1029,7 +1205,7 @@ namespace oomph { namespace libfabric {
         // --------------------------------------------------------------------
         locality get_endpoint_address(struct fid* id)
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
 
             locality::locality_data local_addr;
             std::size_t addrlen = locality_defs::array_size;
@@ -1069,7 +1245,7 @@ namespace oomph { namespace libfabric {
         fid_pep* create_passive_endpoint(
             struct fid_fabric* fabric, struct fi_info* info)
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
 
             struct fid_pep* ep;
             int ret = fi_passive_ep(fabric, info, &ep, nullptr);
@@ -1083,15 +1259,15 @@ namespace oomph { namespace libfabric {
         // --------------------------------------------------------------------
         // if we did not bootstrap, then fetch the list of all localities
         // from agas and insert each one into the address vector
-        void exchange_addresses(MPI_Comm comm, int rank, int size)
+        void exchange_addresses(fid_av* av, MPI_Comm comm, int rank, int size)
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
 
             OOMPH_DP_ONLY(cnt_deb,
                 debug(
                     debug::str<>("initialize_localities"), size, "localities"));
 
-            MPI_exchange_localities(comm, rank, size);
+            MPI_exchange_localities(av, comm, rank, size);
             debug_print_av_vector(size);
             OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("Done localities")));
         }
@@ -1151,8 +1327,8 @@ namespace oomph { namespace libfabric {
             int recvs = 0;
             do
             {
-                int trecv = poll_recv_queue(get_rx_endpoint()->get_rx_cq());
-                int tsend = poll_send_queue(get_tx_endpoint()->get_tx_cq());
+                int tsend = poll_send_queue(get_tx_endpoint().get_tx_cq());
+                int trecv = poll_recv_queue(get_rx_endpoint().get_rx_cq());
                 sends += tsend;
                 recvs += trecv;
                 // we always retry until no new completion events are
@@ -1165,32 +1341,32 @@ namespace oomph { namespace libfabric {
         // --------------------------------------------------------------------
         int poll_send_queue(fid_cq* send_cq)
         {
-            const int MAX_SEND_COMPLETIONS = 1;
+            const int MAX_COMPLETIONS = 16;
             int ret;
-            fi_cq_msg_entry entry[MAX_SEND_COMPLETIONS];
+            fi_cq_msg_entry entry[MAX_COMPLETIONS];
             // create a scoped block for the lock
+            // when threadlocal endpoints are used, we do not need to lock
+            bool threadlocal = (endpoint_type_ == endpoint_type::scalable ||
+                                endpoint_type_ == endpoint_type::threadlocal);
             {
-                bool need_lock = !(endpoint_type_ == endpoint_type::scalable ||
-                                  endpoint_type_ == endpoint_type::threadlocal);
-                // when threadlocal endpoints are used, we do not need to lock
-                auto lock = !need_lock ?
-                    std::unique_lock<mutex_type>() :
-                    std::unique_lock<mutex_type>(
-                        send_mutex_, std::try_to_lock_t{});
+                auto lock = threadlocal ?
+                            std::unique_lock<mutex_type>() :
+                            std::unique_lock<mutex_type>(send_mutex_, std::try_to_lock_t{});
 
-                // if another thread is polling now, just exit
-                if (need_lock && !lock.owns_lock())
+                // if we're not threadlocal and didn't get the lock,
+                // then another thread is polling now, just exit
+                if (!threadlocal && !lock.owns_lock())
                 {
                     return 0;
                 }
 
                 static auto polling =
                     cnt_deb.make_timer(1, debug::str<>("poll send queue"));
-                cnt_deb.timed(polling, debug::ptr(send_cq));
+                OOMPH_DP_ONLY(cnt_deb, timed(polling, hpx::debug::ptr(send_cq)));
 
                 // poll for completions
                 {
-                    ret = fi_cq_read(send_cq, &entry[0], MAX_SEND_COMPLETIONS);
+                    ret = fi_cq_read(send_cq, &entry[0], MAX_COMPLETIONS);
                 }
                 // if there is an error, retrieve it
                 if (ret == -FI_EAVAIL)
@@ -1205,14 +1381,14 @@ namespace oomph { namespace libfabric {
                         cnt_deb.error("txcq Error FI_EAVAIL for "
                                       "FI_SEND with len",
                             debug::hex<6>(e.len), "context",
-                            debug::ptr(e.op_context));
+                            hpx::debug::ptr(e.op_context));
                     }
                     if (e.flags & FI_RMA)
                     {
                         cnt_deb.error("txcq Error FI_EAVAIL for "
                                       "FI_RMA with len",
                             debug::hex<6>(e.len), "context",
-                            debug::ptr(e.op_context));
+                            hpx::debug::ptr(e.op_context));
                     }
                     operation_context* handler =
                         reinterpret_cast<operation_context*>(e.op_context);
@@ -1230,21 +1406,21 @@ namespace oomph { namespace libfabric {
                 {
                     ++sends_complete;
                     OOMPH_DP_ONLY(cnt_deb,
-                        debug(debug::str<>("Completion"), "txcq flags",
-                            fi_tostr(&entry[i].flags, FI_TYPE_OP_FLAGS), "(",
+                        debug(debug::str<>("Completion"), debug::dec<2>(i)
+                            , "txcq flags", fi_tostr(&entry[i].flags, FI_TYPE_OP_FLAGS), "(",
                             debug::dec<>(entry[i].flags), ")", "context",
-                            debug::ptr(entry[i].op_context), "length",
+                            hpx::debug::ptr(entry[i].op_context), "length",
                             debug::hex<6>(entry[i].len)));
                     if (entry[i].flags == (FI_TAGGED | FI_MSG | FI_SEND))
                     {
                         OOMPH_DP_ONLY(cnt_deb,
                             debug(debug::str<>("Completion"),
                                 "txcq FI_MSG tagged send completion",
-                                debug::ptr(entry[i].op_context)));
+                                hpx::debug::ptr(entry[i].op_context)));
 
                         operation_context* handler = reinterpret_cast<operation_context*>(
                             entry[i].op_context);
-                        processed += handler->handle_send_completion();
+                        processed += handler->handle_send_completion(threadlocal);
 
 //                        throw fabric_error(ret, "FI_TAGGED | FI_MSG | FI_SEND");
                     }
@@ -1253,22 +1429,22 @@ namespace oomph { namespace libfabric {
                         OOMPH_DP_ONLY(cnt_deb,
                             debug(debug::str<>("Completion"),
                                 "txcq tagged send completion",
-                                debug::ptr(entry[i].op_context)));
+                                hpx::debug::ptr(entry[i].op_context)));
 
                         operation_context* handler = reinterpret_cast<operation_context*>(
                             entry[i].op_context);
-                        processed += handler->handle_send_completion();
+                        processed += handler->handle_send_completion(threadlocal);
                                             }
                     else if (entry[i].flags == (FI_MSG | FI_SEND))
                     {
                         OOMPH_DP_ONLY(cnt_deb,
                             debug(debug::str<>("Completion"),
                                 "txcq MSG send completion",
-                                debug::ptr(entry[i].op_context)));
+                                hpx::debug::ptr(entry[i].op_context)));
 
                         operation_context* handler = reinterpret_cast<operation_context*>(
                             entry[i].op_context);
-                        processed += handler->handle_send_completion();
+                        processed += handler->handle_send_completion(threadlocal);
 
                         throw fabric_error(ret, "FI_MSG | FI_SEND");
                     }
@@ -1296,26 +1472,32 @@ namespace oomph { namespace libfabric {
         // --------------------------------------------------------------------
         int poll_recv_queue(fid_cq* rx_cq)
         {
-            const int MAX_RECV_COMPLETIONS = 1;
+            const int MAX_COMPLETIONS = 16;
             int ret;
-            fi_cq_msg_entry entry[MAX_RECV_COMPLETIONS];
+            fi_cq_msg_entry entry[MAX_COMPLETIONS];
             // create a scoped block for the lock
+            // when scalable endpoints are used, we do not need to lock
+            // threadlocal is not used for recv queues
+            bool threadlocal = (endpoint_type_ == endpoint_type::scalable);
             {
-                std::unique_lock<mutex_type> lock(
-                    recv_mutex_, std::try_to_lock_t{});
-                // if another thread is polling now, just exit
-                if (!lock.owns_lock())
+                auto lock = threadlocal ?
+                            std::unique_lock<mutex_type>() :
+                            std::unique_lock<mutex_type>(send_mutex_, std::try_to_lock_t{});
+
+                // if we're not threadlocal and didn't get the lock,
+                // then another thread is polling now, just exit
+                if (!threadlocal && !lock.owns_lock())
                 {
                     return 0;
                 }
 
                 static auto polling =
                     cnt_deb.make_timer(1, debug::str<>("poll recv queue"));
-                cnt_deb.timed(polling, debug::ptr(rx_cq));
+                OOMPH_DP_ONLY(cnt_deb, timed(polling, hpx::debug::ptr(rx_cq)));
 
                 // poll for completions
                 {
-                    ret = fi_cq_read(rx_cq, &entry[0], MAX_RECV_COMPLETIONS);
+                    ret = fi_cq_read(rx_cq, &entry[0], MAX_COMPLETIONS);
                 }
                 // if there is an error, retrieve it
                 if (ret == -FI_EAVAIL)
@@ -1331,11 +1513,12 @@ namespace oomph { namespace libfabric {
                             debug(debug::str<>("rxcq Cancelled"), "flags",
                                 debug::hex<6>(e.flags), "len",
                                 debug::hex<6>(e.len), "context",
-                                debug::ptr(e.op_context)));
+                                hpx::debug::ptr(e.op_context)));
                         // the request was cancelled, we can simply exit
-                        // as the cenceller will have doone any cleanup needed
-                        //reinterpret_cast<receiver *>
-                        //        (entry.op_context)->handle_cancel();
+                        // as the canceller will have doone any cleanup needed
+                        operation_context* handler =
+                            reinterpret_cast<operation_context*>(e.op_context);
+                        handler->handle_cancelled();
                         return 0;
                     }
                     else
@@ -1343,13 +1526,14 @@ namespace oomph { namespace libfabric {
                         cnt_deb.error("rxcq Error ??? ", "err",
                             debug::dec<>(-e.err), "flags",
                             debug::hex<6>(e.flags), "len", debug::hex<6>(e.len),
-                            "context", debug::ptr(e.op_context), "error",
+                            "context", hpx::debug::ptr(e.op_context), "error",
                             fi_cq_strerror(rx_cq, e.prov_errno, e.err_data,
                                 (char*) e.buf, e.len));
                     }
                     operation_context* handler =
                         reinterpret_cast<operation_context*>(e.op_context);
-                    handler->handle_error(e);
+                    if (handler)
+                        handler->handle_error(e);
                     return 0;
                 }
             }
@@ -1366,18 +1550,18 @@ namespace oomph { namespace libfabric {
                         debug(debug::str<>("Completion"), "rxcq flags",
                             fi_tostr(&entry[i].flags, FI_TYPE_OP_FLAGS), "(",
                             debug::dec<>(entry[i].flags), ")", "context",
-                            debug::ptr(entry[i].op_context), "length",
+                            hpx::debug::ptr(entry[i].op_context), "length",
                             debug::hex<6>(entry[i].len)));
                     if (entry[i].flags == (FI_TAGGED | FI_MSG | FI_RECV))
                     {
                         OOMPH_DP_ONLY(cnt_deb,
                             debug(debug::str<>("Completion"),
                                 "rxcq FI_MSG tagged recv completion",
-                                debug::ptr(entry[i].op_context)));
+                                hpx::debug::ptr(entry[i].op_context)));
 
                         operation_context* handler = reinterpret_cast<operation_context*>(
                             entry[i].op_context);
-                        processed += handler->handle_recv_completion(entry[i].len);
+                        processed += handler->handle_recv_completion(threadlocal);
 
 //                        throw fabric_error(ret, "FI_TAGGED | FI_MSG | FI_RECV");
                     }
@@ -1386,22 +1570,22 @@ namespace oomph { namespace libfabric {
                         OOMPH_DP_ONLY(cnt_deb,
                             debug(debug::str<>("Completion"),
                                 "rxcq tagged recv completion",
-                                debug::ptr(entry[i].op_context)));
+                                hpx::debug::ptr(entry[i].op_context)));
 
                         operation_context* handler = reinterpret_cast<operation_context*>(
                             entry[i].op_context);
-                        processed += handler->handle_recv_completion(entry[i].len);
+                        processed += handler->handle_recv_completion(threadlocal);
                     }
                     else if (entry[i].flags == (FI_MSG | FI_RECV))
                     {
                         OOMPH_DP_ONLY(cnt_deb,
                             debug(debug::str<>("Completion"),
                                 "rxcq MSG recv completion",
-                                debug::ptr(entry[i].op_context)));
+                                hpx::debug::ptr(entry[i].op_context)));
 
                         operation_context* handler = reinterpret_cast<operation_context*>(
                             entry[i].op_context);
-                        processed += handler->handle_recv_completion(entry[i].len);
+                        processed += handler->handle_recv_completion(threadlocal);
 
                         throw fabric_error(ret, "FI_MSG | FI_RECV");
                     }
@@ -1432,23 +1616,11 @@ namespace oomph { namespace libfabric {
             return fabric_domain_;
         }
 
-//        // --------------------------------------------------------------------
-//        inline std::shared_ptr<heap_type> get_memory_pool()
-//        {
-//            return memory_pool_;
-//        };
-
-//        // --------------------------------------------------------------------
-//        inline heap_type& get_memory_pool_ptr()
-//        {
-//            return *memory_pool_;
-//        }
-
         // --------------------------------------------------------------------
         struct fid_cq* create_completion_queue(
             struct fid_domain* domain, size_t size)
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
 
             struct fid_cq* cq;
             fi_cq_attr cq_attr = {};
@@ -1467,19 +1639,30 @@ namespace oomph { namespace libfabric {
         }
 
         // --------------------------------------------------------------------
-        fid_av* create_address_vector(struct fi_info* info, int N)
+        fid_av* create_address_vector(struct fi_info* info, int N, int num_rx_contexts)
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
 
             fid_av* av;
-            fi_av_attr av_attr = {};
-            if (info->domain_attr->av_type != FI_AV_UNSPEC)
+            fi_av_attr av_attr = {fi_av_type(0),0,0,0,nullptr,nullptr,0};
+
+            // number of addresses expected
+            av_attr.count = N;
+
+            // number of receive contexts used
+            int rx_ctx_bits = 0;
+            while (num_rx_contexts >> ++rx_ctx_bits);
+            av_attr.rx_ctx_bits = rx_ctx_bits;
+
+            // if contexts is nonzero, then we are using a single scalable endpoint
+            av_attr.ep_per_node = (num_rx_contexts>0) ? 2 : 0;
+
+            if (info->domain_attr->av_type != FI_AV_UNSPEC) {
                 av_attr.type = info->domain_attr->av_type;
-            else
-            {
+            }
+            else {
                 OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("map FI_AV_TABLE")));
                 av_attr.type = FI_AV_TABLE;
-                av_attr.count = N;
             }
 
             OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("Creating AV")));
@@ -1490,15 +1673,15 @@ namespace oomph { namespace libfabric {
         }
 
         // --------------------------------------------------------------------
-        libfabric::locality insert_address(const libfabric::locality& address)
+        libfabric::locality insert_address(fid_av* av, const libfabric::locality& address)
         {
-            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(this, __func__);
+            [[maybe_unused]] auto scp = oomph::cnt_deb.scope(hpx::debug::ptr(this), __func__);
 
             OOMPH_DP_ONLY(cnt_deb,
-                trace(debug::str<>("inserting AV"), iplocality(address)));
+                trace(debug::str<>("inserting AV"), iplocality(address), hpx::debug::ptr(av)));
             fi_addr_t fi_addr = 0xffffffff;
             int ret = fi_av_insert(
-                av_, address.fabric_data(), 1, &fi_addr, 0, nullptr);
+                av, address.fabric_data(), 1, &fi_addr, 0, nullptr);
             if (ret < 0)
             {
                 throw fabric_error(ret, "fi_av_insert");

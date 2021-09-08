@@ -18,6 +18,10 @@
 #include "./memory_region.hpp"
 #include "./controller.hpp"
 
+#ifdef USE_OPENMP
+#include <omp.h>
+#endif
+
 //namespace oomph { namespace libfabric {
 //    class controller;
 //}}
@@ -40,9 +44,7 @@ class context_impl : public context_base
   private:
     heap_type    m_heap;
     domain_type *m_domain;
-
     std::shared_ptr<controller_type> m_controller;
-    std::mutex                m_mutex;
 
   public:
     // --------------------------------------------------
@@ -58,8 +60,11 @@ class context_impl : public context_base
         int rank, size;
         OOMPH_CHECK_MPI_RESULT(MPI_Comm_rank(comm, &rank));
         OOMPH_CHECK_MPI_RESULT(MPI_Comm_size(comm, &size));
-        // @TODO Fix number of threads
-        int threads = std::thread::hardware_concurrency();
+        // @TODO Fix number of threads, anything N>1 is ok for now
+        int threads = 2; // thread_safe ? 4 : std::thread::hardware_concurrency()/2;
+#ifdef USE_OPENMP
+        threads = omp_get_num_threads();
+#endif
         m_controller = init_libfabric_controller(this, comm, rank, size, threads);
         m_domain = m_controller->get_domain();
     }
@@ -67,9 +72,9 @@ class context_impl : public context_base
     context_impl(context_impl const&) = delete;
     context_impl(context_impl&&) = delete;
 
-    region_type make_region(void * const ptr, std::size_t size, hwmalloc::registration_flags flags)
+    region_type make_region(void * const ptr, std::size_t size/*, hwmalloc::registration_flags flags*/)
     {
-        return oomph::libfabric::memory_segment(m_domain, ptr, size, flags);
+        return oomph::libfabric::memory_segment(m_domain, ptr, size/*, flags*/);
     }
 
     auto& get_heap() noexcept { return m_heap; }
@@ -84,9 +89,9 @@ class context_impl : public context_base
 // --------------------------------------------------------------------
 template<>
 oomph::libfabric::memory_segment
-register_memory<oomph::context_impl>(oomph::context_impl& c, void * const ptr, std::size_t size, hwmalloc::registration_flags flags)
+register_memory<oomph::context_impl>(oomph::context_impl& c, void * const ptr, std::size_t size/*, hwmalloc::registration_flags flags*/)
 {
-    return c.make_region(ptr, size, flags);
+    return c.make_region(ptr, size/*, flags*/);
 }
 
 #if HWMALLOC_ENABLE_DEVICE

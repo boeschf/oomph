@@ -116,11 +116,11 @@ communicator::~communicator()
 {
     if (m_impl)
     {
-        wait_all();
-        m_impl->release();
+//        wait_all();
 #if OOMPH_ENABLE_BARRIER
         get_comm_set(m_impl->m_context).erase(m_impl);
 #endif // OOMPH_ENABLE_BARRIER
+        m_impl->release();
     }
 }
 

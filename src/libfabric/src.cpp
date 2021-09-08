@@ -40,7 +40,7 @@ context_impl::get_communicator()
 // cppcheck-suppress ConfigurationNotChecked
 static hpx::debug::enable_print<false> src_deb("__SRC__");
 
-std::shared_ptr<controller_type> context_impl::init_libfabric_controller(oomph::context_impl *ctx, MPI_Comm comm, int rank, int size, int threads)
+std::shared_ptr<controller_type> context_impl::init_libfabric_controller(oomph::context_impl */*ctx*/, MPI_Comm comm, int rank, int size, int threads)
 {
     // static std::atomic_flag initialized = ATOMIC_FLAG_INIT;
     // if (initialized.test_and_set()) return;

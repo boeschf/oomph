@@ -12,6 +12,7 @@
 #include <rdma/fabric.h>
 //
 #include <oomph/util/unique_function.hpp>
+#include <oomph/request.hpp>
 //
 #include <boost/lockfree/queue.hpp>
 //
@@ -38,15 +39,19 @@ public:
         boost::lockfree::fixed_sized<false>, boost::lockfree::allocator<std::allocator<void>>>;
     //
     cb_ptr_t        user_cb_;
-    bool            is_send_;
     lockfree_queue *callback_queue_;
 
-    operation_context(util::unique_function<void(void)> &&user_cb, bool send, lockfree_queue *queue)
+    operation_context(cb_ptr_t user_cb, lockfree_queue *queue)
       : context_reserved_space()
-      , user_cb_(std::move(user_cb).release())
-      , is_send_(send)
+      , user_cb_(user_cb)
       , callback_queue_(queue)
     {
+        [[maybe_unused]] auto scp = ctx_deb.scope(hpx::debug::ptr(this), __func__, user_cb_);
+    }
+
+    ~operation_context()
+    {
+        delete user_cb_;
     }
 
     // --------------------------------------------------------------------
@@ -57,36 +62,57 @@ public:
     }
 
     // --------------------------------------------------------------------
-    // Called when a send completes
-    int handle_send_completion()
+    // When a completion returns FI_ECANCELED, this is called
+    // we only need to delete the callback, not invoke it
+    void handle_cancelled()
     {
-        OOMPH_DP_ONLY(ctx_deb, debug(hpx::debug::str<>("handle_send_completion")
-                                    , hpx::debug::ptr(this)));
-        // enqueue the callback
-        while (!callback_queue_->push(user_cb_)) {}
-        return 1;
+        [[maybe_unused]] auto scp = ctx_deb.scope(hpx::debug::ptr(this), __func__, user_cb_);
+        user_cb_->invoke();
+        delete user_cb_;
+        const void *ptr = (void*)(0x0000000000000000);
+        user_cb_ = (cb_ptr_t)ptr;
     }
 
     // --------------------------------------------------------------------
     // Called when a recv completes
-    int handle_recv_completion(std::uint64_t /*len*/)
+    int handle_recv_completion(bool threadlocal)
     {
-        OOMPH_DP_ONLY(ctx_deb, debug(hpx::debug::str<>("handle_recv_completion")
-                                    , hpx::debug::ptr(this)));
-        // enqueue the callback
-        while (!callback_queue_->push(user_cb_)) {}
+        [[maybe_unused]] auto scp = ctx_deb.scope(hpx::debug::ptr(this), __func__, user_cb_);
+        if (!threadlocal) {
+            // enqueue the callback
+            while (!callback_queue_->push(user_cb_)) {}
+        }
+        else {
+            if (user_cb_ == reinterpret_cast<decltype(user_cb_)>(0xffffffffffffffff))
+            {
+                ctx_deb.error(hpx::debug::ptr(this), __func__, user_cb_);
+                throw std::runtime_error("Invalid callback");
+            }
+            user_cb_->invoke();
+            delete user_cb_;
+            // mark this callback as invalid
+            user_cb_ = reinterpret_cast<decltype(user_cb_)>(0xffffffffffffffff);
+        }
         return 1;
     }
 
     // --------------------------------------------------------------------
-    // when a comlpetion returns FI_ECANCELED, this should be called
-    // but in fact we are not honouring this as it is not needed yet.
-    bool cancel(endpoint_wrapper* /*endpoint*/)
+    // Called when a send completes
+    int handle_send_completion(bool threadlocal)
     {
-        // bool ok = (fi_cancel(&endpoint_->get_ep()->fid, this) == 0);
-        return false;
+        [[maybe_unused]] auto scp = ctx_deb.scope(hpx::debug::ptr(this), __func__, user_cb_);
+        if (!threadlocal) {
+            // enqueue the callback
+            while (!callback_queue_->push(user_cb_)) {}
+        }
+        else {
+            user_cb_->invoke();
+            delete user_cb_;
+            const void *ptr = (void*)(0x3333333333333333);
+            user_cb_ = (cb_ptr_t)ptr;
+        }
+        return 1;
     }
 };
-
 
 }} // namespace oomph

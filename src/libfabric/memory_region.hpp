@@ -94,12 +94,12 @@ struct memory_handle : handle_base
     memory_handle(memory_handle const&) noexcept = default;
     memory_handle& operator=(memory_handle const&) noexcept = default;
 
-    memory_handle(provider_region* region, unsigned char* addr, std::size_t size, uint32_t flags) noexcept
+    memory_handle(provider_region* region, unsigned char* addr, std::size_t size/*, uint32_t flags*/) noexcept
         : address_{addr}
         , region_{region}
         , size_{uint32_t(size)}
         , used_space_{0}
-        , flags_{flags}
+//        , flags_{flags}
     {
     }
 
@@ -110,7 +110,7 @@ struct memory_handle : handle_base
         , region_{std::exchange(other.region_, nullptr)}
         , size_{other.size_}
         , used_space_{other.used_space_}
-        , flags_{other.flags_}
+//        , flags_{other.flags_}
     {
     }
 
@@ -122,7 +122,7 @@ struct memory_handle : handle_base
         region_ = std::exchange(other.region_, nullptr);
         size_ = other.size_;
         used_space_ = other.used_space_;
-        flags_ = other.flags_;
+//        flags_ = other.flags_;
         return *this;
     }
 
@@ -155,9 +155,9 @@ struct memory_handle : handle_base
     // --------------------------------------------------------------------
     // A user allocated region uses memory allocted by the user.
     // on destruction, the memory is unregistered, but not deleted
-    inline void set_user_region() { flags_ |= hwmalloc::registration_flags::memory_user; }
+//    inline void set_user_region() { flags_ |= hwmalloc::registration_flags::memory_user; }
 
-    inline bool get_user_region() const { return (flags_ & hwmalloc::registration_flags::memory_user) == hwmalloc::registration_flags::memory_user; }
+//    inline bool get_user_region() const { return (flags_ & hwmalloc::registration_flags::memory_user) == hwmalloc::registration_flags::memory_user; }
 /*
     // --------------------------------------------------------------------
     // A temp region is one that the memory pool is not managing
@@ -197,7 +197,8 @@ struct memory_handle : handle_base
            << " used_space " << hpx::debug::hex<6>(region./*used_space_*/size_)
            << " local key "  << hpx::debug::ptr(region_provider::get_local_key(region.region_))
            << " remote key " << hpx::debug::ptr(region_provider::get_remote_key(region.region_))
-           << " flags "      << hpx::debug::bin<8>(region.flags_);
+//           << " flags "      << hpx::debug::bin<8>(region.flags_);
+              ;
         // clang-format on
 #endif
         return os;
@@ -220,7 +221,7 @@ struct memory_handle : handle_base
     mutable uint32_t used_space_;
 
     // flags to control lifetime of blocks
-    uint32_t flags_;
+//    uint32_t flags_;
 
 };
 
@@ -238,8 +239,8 @@ struct memory_segment : public memory_handle
 
     // --------------------------------------------------------------------
     memory_segment(
-        provider_region* region, unsigned char* address, unsigned char* base_address, uint64_t size, hwmalloc::registration_flags flags)
-    : memory_handle(region, address, size, flags)
+        provider_region* region, unsigned char* address, unsigned char* base_address, uint64_t size/*, hwmalloc::registration_flags flags*/)
+    : memory_handle(region, address, size/*, flags*/)
     , base_addr_(base_address)
     {
     }
@@ -266,13 +267,13 @@ struct memory_segment : public memory_handle
     // we do not cache local/remote keys here because memory segments are only
     // used by the heap to store chunks and the user will always receive
     // a memory_handle - which does have keys cached
-    memory_segment(provider_domain* pd, const void* buffer, const uint64_t length, hwmalloc::registration_flags flags)
+    memory_segment(provider_domain* pd, const void* buffer, const uint64_t length/*, hwmalloc::registration_flags flags*/)
     {
         address_ = static_cast<unsigned char*>(const_cast<void*>(buffer));
         size_ = length;
         used_space_ = length;
         region_ = nullptr;
-        flags_ = flags;
+//        flags_ = flags;
         //
         base_addr_ = memory_handle::address_;
 
@@ -311,7 +312,7 @@ struct memory_segment : public memory_handle
     // returns 0 when successful, -1 otherwise
     int deregister(void)
     {
-        if (region_ && !get_user_region())
+        if (region_ /*&& !get_user_region()*/)
         {
 #if has_debug
             mrn_deb.trace(hpx::debug::str<>("release"), region_);
@@ -333,10 +334,10 @@ struct memory_segment : public memory_handle
                 mrn_deb.trace(hpx::debug::str<>("deregistered"), region_);
 #endif
             }
-            if (!get_user_region())
-            {
-                //                    delete[](static_cast<const char*>(buffer));
-            }
+//            if (!get_user_region())
+//            {
+//                //                    delete[](static_cast<const char*>(buffer));
+//            }
             region_ = nullptr;
         }
         return 0;
@@ -344,7 +345,7 @@ struct memory_segment : public memory_handle
 
     handle_type get_handle(std::size_t offset, std::size_t size) const noexcept
     {
-        return memory_handle(region_, base_addr_ + offset, size, flags_);
+        return memory_handle(region_, base_addr_ + offset, size/*, flags_*/);
     }
 
     // --------------------------------------------------------------------
