@@ -395,14 +395,15 @@ namespace oomph { namespace libfabric {
                     fabric_domain_, fabric_info_->tx_attr->size);
 
                 // setup a scalable endpoint for sending messages
+                unsigned int threads_allocated = 0;
                 auto ep_tx = new_endpoint_scalable(
-                    fabric_domain_, fabric_info_, threads);
+                    fabric_domain_, fabric_info_, threads, threads_allocated);
                 if (!ep_tx)
                     throw fabric_error(FI_EOTHER, "fi_scalable endpoint creation failed");
 
                 OOMPH_DP_ONLY(cnt_deb,
                     trace(debug::str<>("scalable endpoint ok"),
-                        "Contexts required", debug::dec<4>(threads)));
+                        "Contexts allocated", debug::dec<4>(threads_allocated)));
 
                 OOMPH_DP_ONLY(cnt_deb,
                     trace(debug::str<>("fi_scalable_ep_bind AV")));
@@ -410,10 +411,10 @@ namespace oomph { namespace libfabric {
                 if (ret)
                     throw fabric_error(ret, "fi_scalable_ep_bind");
 
-                scalable_cq_array.resize(threads, nullptr);
-                scalable_ep_array.resize(threads, nullptr);
+                scalable_cq_array.resize(threads_allocated, nullptr);
+                scalable_ep_array.resize(threads_allocated, nullptr);
 
-                for (unsigned int i = 0; i < threads; i++)
+                for (unsigned int i = 0; i < threads_allocated; i++)
                 {
                     OOMPH_DP_ONLY(cnt_deb,
                         trace(debug::str<>("fi_tx_context"),
@@ -430,21 +431,19 @@ namespace oomph { namespace libfabric {
                         fabric_domain_, fabric_info_->tx_attr->size);
                 }
 
-                for (unsigned int i = 0; i < threads; i++)
+                for (unsigned int i = 0; i < threads_allocated; i++)
                 {
                     OOMPH_DP_ONLY(cnt_deb,
                         trace(debug::str<>("fi_scalable_ep_bind"),
                             debug::dec<4>(i)));
                     // (RECV is not needed, but fixes libfabric bug)
                     bind_queue_to_endpoint(scalable_ep_array[i],
-                        scalable_cq_array[i], FI_TRANSMIT);
+                        scalable_cq_array[i], FI_TRANSMIT | FI_RECV);
                     OOMPH_DP_ONLY(cnt_deb,
                         trace(debug::str<>("enable_endpoint"),
                             debug::dec<4>(i)));
                     enable_endpoint(scalable_ep_array[i]);
                 }
-                ep_rx_ = std::make_unique<endpoint_wrapper>(
-                    ep_rx, rx_cq, nullptr);
             }
 
             // once enabled we can get the address
@@ -589,8 +588,9 @@ namespace oomph { namespace libfabric {
                 debug(debug::str<>("Here locality"), iplocality(here_)));
 
 #if defined(OOMPH_LIBFABRIC_SOCKETS) || defined(OOMPH_LIBFABRIC_TCP)
-
             fabric_hints_->addr_format = FI_SOCKADDR_IN;
+//#elif defined(OOMPH_LIBFABRIC_VERBS)
+//            fabric_hints_->addr_format = FI_SOCKADDR_IB;
 #endif
 
             fabric_hints_->caps =
@@ -598,6 +598,11 @@ namespace oomph { namespace libfabric {
 
             fabric_hints_->mode = FI_CONTEXT /*| FI_MR_LOCAL*/;
             if (provider.c_str() == std::string("tcp"))
+            {
+                fabric_hints_->fabric_attr->prov_name =
+                    strdup(std::string(provider + ";ofi_rxm").c_str());
+            }
+            else if (provider.c_str() == std::string("verbs"))
             {
                 fabric_hints_->fabric_attr->prov_name =
                     strdup(std::string(provider + ";ofi_rxm").c_str());
@@ -840,7 +845,7 @@ namespace oomph { namespace libfabric {
 
         // --------------------------------------------------------------------
         struct fid_ep* new_endpoint_scalable(
-            struct fid_domain* domain, struct fi_info* info, int threads)
+            struct fid_domain* domain, struct fi_info* info, int threads, unsigned int &threads_allocated)
         {
             // don't allow multiple threads to call endpoint create at the same time
             scoped_lock lock(controller_mutex_);
@@ -861,15 +866,20 @@ namespace oomph { namespace libfabric {
                 throw fabric_error(ret, "fi_getinfo");
 
             // Check the optimal number of TX and RX contexts supported by the provider
-            int context_count =
-                std::min(threads, int(new_hints->domain_attr->tx_ctx_cnt));
+            int context_count = int(new_hints->domain_attr->tx_ctx_cnt);
+//                std::min(threads, int(new_hints->domain_attr->tx_ctx_cnt));
             // ctx_cnt = MIN(threads, fabric_hints_->domain_attr->rx_ctx_cnt);
             if (context_count < threads || context_count <= 1)
             {
                 OOMPH_DP_ONLY(cnt_err,
-                    error(debug::str<>("scalable endpoint unsupported")));
+                    error(debug::str<>("scalable endpoint unsupported")
+                          , "Threads", debug::dec<3>(threads)
+                          , "tx_ctx_cnt", debug::dec<3>(new_hints->domain_attr->tx_ctx_cnt)
+                          , "context_count", debug::dec<3>(context_count)
+                          ));
                 return nullptr;
             }
+            threads_allocated = context_count;
             new_hints->ep_attr->tx_ctx_cnt = context_count;
             new_hints->ep_attr->rx_ctx_cnt = 0;
 
@@ -932,12 +942,12 @@ namespace oomph { namespace libfabric {
                 if (tl_tx_ == nullptr)
                 {
                     [[maybe_unused]] auto scp =
-                        oomph::cnt_deb.scope(this, __func__, "threadlocal", std::this_thread::get_id());
+                        oomph::cnt_deb.scope(this, __func__, "scalable", std::this_thread::get_id());
 
                     static std::atomic<int> thread_counter(0);
                     // get a unique index for this thread
                     unsigned int endpoint_index = thread_counter++;
-                    if (endpoint_index > scalable_ep_array.size())
+                    if (endpoint_index >= scalable_ep_array.size())
                     {
                         OOMPH_DP_ONLY(
                             cnt_err, error(debug::str<>("Endpoint overflow")));
@@ -1165,13 +1175,14 @@ namespace oomph { namespace libfabric {
         // --------------------------------------------------------------------
         int poll_send_queue(fid_cq* send_cq)
         {
-            const int MAX_SEND_COMPLETIONS = 1;
+            const int MAX_SEND_COMPLETIONS = 8;
             int ret;
             fi_cq_msg_entry entry[MAX_SEND_COMPLETIONS];
             // create a scoped block for the lock
+            bool need_lock = !(endpoint_type_ == endpoint_type::scalable ||
+                               endpoint_type_ == endpoint_type::threadlocal);
+            int actual_SEND_COMPLETIONS = need_lock ? 8 : 1;
             {
-                bool need_lock = !(endpoint_type_ == endpoint_type::scalable ||
-                                  endpoint_type_ == endpoint_type::threadlocal);
                 // when threadlocal endpoints are used, we do not need to lock
                 auto lock = !need_lock ?
                     std::unique_lock<mutex_type>() :
@@ -1244,7 +1255,7 @@ namespace oomph { namespace libfabric {
 
                         operation_context* handler = reinterpret_cast<operation_context*>(
                             entry[i].op_context);
-                        processed += handler->handle_send_completion();
+                        processed += handler->handle_send_completion(/*need_lock*/true);
 
 //                        throw fabric_error(ret, "FI_TAGGED | FI_MSG | FI_SEND");
                     }
@@ -1257,7 +1268,7 @@ namespace oomph { namespace libfabric {
 
                         operation_context* handler = reinterpret_cast<operation_context*>(
                             entry[i].op_context);
-                        processed += handler->handle_send_completion();
+                        processed += handler->handle_send_completion(/*need_lock*/true);
                                             }
                     else if (entry[i].flags == (FI_MSG | FI_SEND))
                     {
@@ -1268,7 +1279,7 @@ namespace oomph { namespace libfabric {
 
                         operation_context* handler = reinterpret_cast<operation_context*>(
                             entry[i].op_context);
-                        processed += handler->handle_send_completion();
+                        processed += handler->handle_send_completion(/*need_lock*/true);
 
                         throw fabric_error(ret, "FI_MSG | FI_SEND");
                     }
@@ -1301,10 +1312,16 @@ namespace oomph { namespace libfabric {
             fi_cq_msg_entry entry[MAX_RECV_COMPLETIONS];
             // create a scoped block for the lock
             {
-                std::unique_lock<mutex_type> lock(
-                    recv_mutex_, std::try_to_lock_t{});
+                bool need_lock = true; // !(endpoint_type_ == endpoint_type::scalable ||
+                                  // endpoint_type_ == endpoint_type::threadlocal);
+                // when threadlocal endpoints are used, we do not need to lock
+                auto lock = !need_lock ?
+                    std::unique_lock<mutex_type>() :
+                    std::unique_lock<mutex_type>(
+                        send_mutex_, std::try_to_lock_t{});
+
                 // if another thread is polling now, just exit
-                if (!lock.owns_lock())
+                if (need_lock && !lock.owns_lock())
                 {
                     return 0;
                 }

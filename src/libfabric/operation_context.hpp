@@ -58,12 +58,18 @@ public:
 
     // --------------------------------------------------------------------
     // Called when a send completes
-    int handle_send_completion()
+    int handle_send_completion(bool with_lock)
     {
         OOMPH_DP_ONLY(ctx_deb, debug(hpx::debug::str<>("handle_send_completion")
                                     , hpx::debug::ptr(this)));
-        // enqueue the callback
-        while (!callback_queue_->push(user_cb_)) {}
+        if (with_lock) {
+            // enqueue the callback
+            while (!callback_queue_->push(user_cb_)) {}
+        }
+        else {
+            user_cb_->invoke();
+            delete user_cb_;
+        }
         return 1;
     }
 

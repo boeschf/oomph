@@ -18,6 +18,10 @@
 #include "./memory_region.hpp"
 #include "./controller.hpp"
 
+#ifdef USE_OPENMP
+#include <omp.h>
+#endif
+
 //namespace oomph { namespace libfabric {
 //    class controller;
 //}}
@@ -59,7 +63,10 @@ class context_impl : public context_base
         OOMPH_CHECK_MPI_RESULT(MPI_Comm_rank(comm, &rank));
         OOMPH_CHECK_MPI_RESULT(MPI_Comm_size(comm, &size));
         // @TODO Fix number of threads
-        int threads = std::thread::hardware_concurrency();
+        int threads = std::thread::hardware_concurrency()/2;
+#ifdef USE_OPENMP
+        threads = omp_get_num_threads();
+#endif
         m_controller = init_libfabric_controller(this, comm, rank, size, threads);
         m_domain = m_controller->get_domain();
     }
