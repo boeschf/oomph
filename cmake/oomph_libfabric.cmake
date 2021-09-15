@@ -11,6 +11,7 @@ if (OOMPH_WITH_LIBFABRIC)
     add_library(oomph::libfabric ALIAS oomph_libfabric)
     oomph_shared_lib_options(oomph_libfabric)
     target_link_libraries(oomph_libfabric PUBLIC libfabric::libfabric)
+    set_property(TARGET oomph_libfabric PROPERTY CXX_STANDARD 17)
     install(TARGETS oomph_libfabric
         EXPORT oomph-targets
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -247,7 +248,7 @@ if (OOMPH_WITH_LIBFABRIC)
     #------------------------------------------------------------------------------
     oomph_libfabric_option(OOMPH_LIBFABRIC_PROVIDER STRING
       "The provider (verbs/gni/psm2/tcp/sockets)"
-      "verbs" CATEGORY "libfabric" ADVANCED)
+      "tcp" CATEGORY "libfabric" ADVANCED)
 
     oomph_libfabric_add_config_define_namespace(
         DEFINE OOMPH_LIBFABRIC_PROVIDER
