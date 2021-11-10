@@ -61,12 +61,14 @@ class communicator_impl : public communicator_base<communicator_impl>
 
     ~communicator_impl()
     {
+#ifdef OOMPH_UCX_USE_MULTIPLE_ENDPOINTS
         // schedule all endpoints for closing
         for (auto& kvp : m_send_worker->m_endpoint_cache)
         {
             m_send_worker->m_endpoint_handles.push_back(kvp.second.close());
             m_send_worker->m_endpoint_handles.back().progress();
         }
+#endif
     }
 
     auto& get_heap() noexcept { return m_context->get_heap(); }
@@ -74,6 +76,8 @@ class communicator_impl : public communicator_base<communicator_impl>
     void progress()
     {
         while (ucp_worker_progress(m_send_worker->get())) {}
+
+#ifdef OOMPH_UCX_USE_MULTIPLE_ENDPOINTS
         if (m_thread_safe)
         {
 #ifdef OOMPH_UCX_USE_SPIN_LOCK
@@ -90,6 +94,7 @@ class communicator_impl : public communicator_base<communicator_impl>
         {
             while (ucp_worker_progress(m_recv_worker->get())) {}
         }
+#endif
         // work through ready recv callbacks, which were pushed to the queue by other threads
         // (including this thread)
         if (m_thread_safe)
@@ -158,8 +163,10 @@ class communicator_impl : public communicator_base<communicator_impl>
         // pointer to store callback in case of early completion
         request_data::cb_ptr_t cb_ptr = nullptr;
         {
+#ifdef OOMPH_UCX_USE_MULTIPLE_ENDPOINTS
             // locked region
             if (m_thread_safe) m_mutex.lock();
+#endif
 
             ucs_status_ptr_t ret;
             {
@@ -203,7 +210,9 @@ class communicator_impl : public communicator_base<communicator_impl>
                 throw std::runtime_error("oomph: ucx error - recv operation failed");
             }
 
+#ifdef OOMPH_UCX_USE_MULTIPLE_ENDPOINTS
             if (m_thread_safe) m_mutex.unlock();
+#endif
         }
         // check for early completion
         if (cb_ptr)
@@ -283,16 +292,24 @@ class communicator_impl : public communicator_base<communicator_impl>
         auto& req_data = request_data::get(req.m_data->m_data);
         {
             // locked region
+#ifdef OOMPH_UCX_USE_MULTIPLE_ENDPOINTS
             if (m_thread_safe) m_mutex.lock();
+#endif
             ucp_request_cancel(m_recv_worker->get(), req_data.m_ucx_ptr);
+#ifdef OOMPH_UCX_USE_MULTIPLE_ENDPOINTS
             if (m_thread_safe) m_mutex.unlock();
+#endif
         }
         // The ucx callback will still be executed after the cancel. However, the status argument
         // will indicate whether the cancel was successful.
         // Progress the receive worker in order to execute the ucx callback
+#ifdef OOMPH_UCX_USE_MULTIPLE_ENDPOINTS
         if (m_thread_safe) m_mutex.lock();
+#endif
         while (ucp_worker_progress(m_recv_worker->get())) {}
+#ifdef OOMPH_UCX_USE_MULTIPLE_ENDPOINTS
         if (m_thread_safe) m_mutex.unlock();
+#endif
         // check whether the cancelled callback was enqueued by consuming all queued cancelled
         // callbacks and putting them in a temporary vector
         bool found = false;

@@ -126,7 +126,11 @@ class context_impl : public context_base
         // make shared worker
         // use single-threaded UCX mode, as per developer advice
         // https://github.com/openucx/ucx/issues/4609
+#ifdef OOMPH_UCX_USE_MULTIPLE_ENDPOINTS
         m_worker.reset(new worker_type{get(), m_db, UCS_THREAD_MODE_SINGLE});
+#else
+        m_worker.reset(new worker_type{get(), m_db, UCS_THREAD_MODE_MULTI});
+#endif
 
         // intialize database
         m_db.init(m_worker->address());
