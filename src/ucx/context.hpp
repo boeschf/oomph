@@ -129,7 +129,10 @@ class context_impl : public context_base
 #ifdef OOMPH_UCX_USE_MULTIPLE_ENDPOINTS
         m_worker.reset(new worker_type{get(), m_db, UCS_THREAD_MODE_SINGLE});
 #else
-        m_worker.reset(new worker_type{get(), m_db, UCS_THREAD_MODE_MULTI});
+	if(this->m_thread_safe)
+            m_worker.reset(new worker_type{get(), m_db, UCS_THREAD_MODE_MULTI});
+	else
+            m_worker.reset(new worker_type{get(), m_db, UCS_THREAD_MODE_SINGLE});
 #endif
 
         // intialize database
