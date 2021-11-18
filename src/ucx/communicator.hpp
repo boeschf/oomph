@@ -28,6 +28,7 @@ namespace oomph
 
 class communicator_impl : public communicator_base<communicator_impl>
 {
+    friend class channel::sender_impl;
   public:
     using worker_type = worker_t;
     using rank_type = communicator::rank_type;

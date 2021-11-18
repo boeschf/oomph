@@ -13,6 +13,9 @@
 #include <oomph/util/heap_pimpl.hpp>
 #include <oomph/message_buffer.hpp>
 #include <oomph/communicator.hpp>
+#include <oomph/future.hpp>
+#include <oomph/channel/sender.hpp>
+#include <oomph/channel/receiver.hpp>
 #include <hwmalloc/config.hpp>
 #include <hwmalloc/device.hpp>
 
@@ -23,6 +26,8 @@ class context
 {
   public:
     using pimpl = util::heap_pimpl<context_impl>;
+    using rank_type = communicator::rank_type;
+    using tag_type = communicator::tag_type;
 
   private:
     util::mpi_comm_holder m_mpi_comm;
@@ -79,6 +84,18 @@ class context
 #endif
 
     communicator get_communicator();
+
+    template<typename T>
+    future<channel::sender<T>> make_sender(std::size_t size, rank_type r, tag_type t)
+    {
+        return channel::sender<T>{get_communicator(), size, r, t};
+    }
+
+    template<typename T>
+    future<channel::receiver<T>> make_receiver(std::size_t size, rank_type r, tag_type t)
+    {
+        return channel::receiver<T>{get_communicator(), size, r, t};
+    }
 
   private:
     detail::message_buffer make_buffer_core(std::size_t size);

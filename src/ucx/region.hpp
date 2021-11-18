@@ -16,7 +16,10 @@ namespace oomph
 class region
 {
   public:
-    using handle_type = handle;
+    //using handle_type = handle;
+    struct handle_type
+    {
+    };
 
   private:
     void* m_ptr;
@@ -35,9 +38,10 @@ class region
     }
 
     // get a handle to some portion of the region
-    handle_type get_handle(std::size_t offset, std::size_t size)
+    handle_type get_handle(std::size_t/* offset*/, std::size_t/* size*/)
     {
-        return {(void*)((char*)m_ptr + offset), size};
+        //return {(void*)((char*)m_ptr + offset), size};
+        return {};
     }
 };
 
@@ -51,6 +55,8 @@ class rma_region
     void*         m_ptr;
     std::size_t   m_size;
     ucp_mem_h     m_memh;
+    void*         m_rkey;
+    size_t        m_rkey_size;
 
   public:
     rma_region(ucp_context_h ctxt, void* ptr, std::size_t size, bool gpu = false)
@@ -95,6 +101,9 @@ class rma_region
 
         // register memory
         OOMPH_CHECK_UCX_RESULT(ucp_mem_map(m_ucp_context, &params, &m_memh));
+
+        // pack memory handle
+        OOMPH_CHECK_UCX_RESULT(ucp_rkey_pack(m_ucp_context,m_memh,&m_rkey,&m_rkey_size));
     }
 
     rma_region(rma_region const&) = delete;
@@ -103,17 +112,24 @@ class rma_region
     , m_ptr{std::exchange(r.m_ptr, nullptr)}
     , m_size{r.m_size}
     , m_memh{r.m_memh}
+    , m_rkey{r.m_rkey}
+    , m_rkey_size{r.m_rkey_size}
     {
     }
     ~rma_region()
     {
-        if (m_ptr) { ucp_mem_unmap(m_ucp_context, m_memh); }
+        if (m_ptr)
+        {
+            ucp_rkey_buffer_release(m_rkey);
+            ucp_mem_unmap(m_ucp_context, m_memh);
+        }
     }
 
     // get a handle to some portion of the region
     handle_type get_handle(std::size_t offset, std::size_t size)
     {
-        return {(void*)((char*)m_ptr + offset), size};
+        //return {(void*)((char*)m_ptr + offset), size};
+        return {m_rkey, m_rkey_size, offset};
     }
 };
 

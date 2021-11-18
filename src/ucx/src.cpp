@@ -9,6 +9,8 @@
  */
 #include "./context.hpp"
 #include "./communicator.hpp"
+#include "./channel/sender.hpp"
+#include "./channel/receiver.hpp"
 #include <chrono>
 #ifndef NDEBUG
 #include <iostream>
@@ -56,9 +58,10 @@ context_impl::~context_impl()
 
     while (handles.size() != 0u && elapsed < t_timeout)
     {
+        for (auto& w_ptr : m_workers) ucp_worker_progress(w_ptr->m_worker);
+        ucp_worker_progress(m_worker->m_worker);
         for (auto& h : handles)
         {
-            ucp_worker_progress(m_worker->m_worker);
             if (!h.ready()) tmp.push_back(std::move(h));
         }
         handles.swap(tmp);
@@ -98,3 +101,107 @@ context_impl::~context_impl()
 } // namespace oomph
 
 #include "../src.cpp"
+
+namespace oomph
+{
+namespace channel
+{
+namespace detail
+{
+sender::sender(communicator&& c, std::size_t s, rank_type r, tag_type t, std::size_t type_size)
+: m_impl{std::move(c), s, r, t, type_size}
+{
+}
+sender::sender(sender&& other) noexcept = default;
+sender& sender::operator=(sender&& other) noexcept = default;
+sender::~sender() = default;
+void
+sender::progress_connection()
+{
+    m_impl->progress_connection();
+}
+bool
+sender::is_ready_connection() const noexcept
+{
+    return m_impl->is_ready_connection();
+}
+
+rma_buffer sender::request_msg()
+{
+    return m_impl->request_msg();
+}
+
+void sender::return_msg(rma_buffer b)
+{
+    assert(b);
+    m_impl->return_msg(b);
+}
+
+std::size_t sender::scheduled_sends_impl() const noexcept
+{
+    return m_impl->scheduled_sends();
+}
+
+void
+sender::progress()
+{
+    if (m_fcts.size())
+    {
+        auto d = request_msg();
+        if (d) invoke(d);
+    }
+    m_impl->progress();
+}
+
+receiver::receiver(communicator&& c, std::size_t s, rank_type r, tag_type t, std::size_t type_size)
+: m_impl{std::move(c), s, r, t, type_size}
+{
+}
+receiver::receiver(receiver&& other) noexcept = default;
+receiver& receiver::operator=(receiver&& other) noexcept = default;
+receiver::~receiver() = default;
+void
+receiver::progress_connection()
+{
+    m_impl->progress_connection();
+}
+bool
+receiver::is_ready_connection() const noexcept
+{
+    return m_impl->is_ready_connection();
+}
+rma_buffer receiver::request_msg()
+{
+    return m_impl->request_msg();
+}
+
+void receiver::return_msg(rma_buffer b)
+{
+    assert(b);
+    m_impl->return_msg(b);
+}
+
+void
+receiver::progress()
+{
+    if (m_fcts.size())
+    {
+        auto d = request_msg();
+        if (d) invoke(d);
+    }
+    m_impl->progress();
+}
+
+//void signal_written(sender_impl*)
+//{
+
+//}
+} // namespace detail
+
+//void
+//writer::progress()
+//{
+//}
+
+} // namespace channel
+} // namespace oomph

@@ -10,6 +10,8 @@
  */
 #pragma once
 
+#include <oomph/channel/sender_fwd.hpp>
+#include <oomph/channel/receiver_fwd.hpp>
 #include "../context_base.hpp"
 #include "./config.hpp"
 #include "./rma_context.hpp"
@@ -24,6 +26,8 @@ namespace oomph
 {
 class context_impl : public context_base
 {
+    friend class channel::sender_impl;
+    friend class channel::receiver_impl;
   public: // member types
     using region_type = region;
     using device_region_type = region;

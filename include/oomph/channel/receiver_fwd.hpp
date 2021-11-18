@@ -9,18 +9,11 @@
  */
 #pragma once
 
-#include "./error.hpp"
-
 namespace oomph
 {
-struct handle
+namespace channel
 {
-    //void*       m_ptr;
-    //std::size_t m_size;
-
-    void* m_rkey;
-    std::size_t m_rkey_size;
-    std::size_t m_offset;
-};
-
+class receiver_impl;
+} // namespace channel
 } // namespace oomph
+

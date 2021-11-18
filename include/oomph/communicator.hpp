@@ -14,6 +14,8 @@
 #include <oomph/util/mpi_error.hpp>
 #include <oomph/detail/communicator_helper.hpp>
 #include <oomph/util/unique_function.hpp>
+#include <oomph/channel/sender_fwd.hpp>
+#include <oomph/channel/receiver_fwd.hpp>
 #include <hwmalloc/device.hpp>
 #include <functional>
 #include <vector>
@@ -24,9 +26,6 @@
 namespace oomph
 {
 class context;
-class send_channel_base;
-class recv_channel_base;
-
 class communicator_impl;
 
 class communicator
@@ -43,8 +42,8 @@ class communicator
 
   private:
     friend class context;
-    friend class send_channel_base;
-    friend class recv_channel_base;
+    friend class channel::sender_impl;
+    friend class channel::receiver_impl;
 
     struct schedule
     {

@@ -9,6 +9,8 @@
  */
 #pragma once
 
+#include <oomph/channel/sender_fwd.hpp>
+#include <oomph/channel/receiver_fwd.hpp>
 #include "./config.hpp"
 #include "./region.hpp"
 #include <hwmalloc/register.hpp>
@@ -19,6 +21,8 @@ namespace oomph
 {
 class rma_context
 {
+    friend class channel::sender_impl;
+    friend class channel::receiver_impl;
   public:
     using region_type = rma_region;
     using device_region_type = rma_region;
