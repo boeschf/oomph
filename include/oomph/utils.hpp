@@ -1,5 +1,5 @@
 /*
- * GridTools
+ * ghex-org
  *
  * Copyright (c) 2014-2021, ETH Zurich
  * All rights reserved.
@@ -9,7 +9,7 @@
  */
 #pragma once
 
-#include <hwmalloc/config.hpp>
-
-#cmakedefine01 OOMPH_USE_FAST_PIMPL
-#cmakedefine01 OOMPH_ENABLE_BARRIER
+namespace oomph
+{
+void print_config();
+}

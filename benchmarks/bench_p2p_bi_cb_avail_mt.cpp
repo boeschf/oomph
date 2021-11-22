@@ -29,7 +29,7 @@ main(int argc, char** argv)
     if (env.size != 2) return exit(argv[0]);
 
     context ctxt(MPI_COMM_WORLD, multi_threaded);
-    barrier b(cmd_args.num_threads);
+    barrier b(ctxt, cmd_args.num_threads);
     timer   t0;
     timer   t1;
 
@@ -106,7 +106,7 @@ main(int argc, char** argv)
             for (auto& c : rmsgs[j]) c = 0;
         }
 
-        b(comm);
+        b();
 
         if (thread_id == 0)
         {
@@ -172,7 +172,7 @@ main(int argc, char** argv)
             }
         }
 
-        b(comm);
+        b();
 
         if (thread_id == 0 && rank == 0)
         {
@@ -182,7 +182,7 @@ main(int argc, char** argv)
                       << std::endl;
         }
 
-        b(comm);
+        b();
 
 #ifdef OOMPH_BENCHMARKS_MT
 #pragma omp critical

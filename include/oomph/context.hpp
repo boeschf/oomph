@@ -22,8 +22,11 @@
 namespace oomph
 {
 class context_impl;
+class barrier;
 class context
 {
+    friend class barrier;
+
   public:
     using pimpl = util::heap_pimpl<context_impl>;
     using rank_type = communicator::rank_type;

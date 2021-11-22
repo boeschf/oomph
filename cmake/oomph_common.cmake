@@ -2,6 +2,7 @@
 # global implementation detail options
 # ---------------------------------------------------------------------
 set(OOMPH_USE_FAST_PIMPL OFF CACHE BOOL "store private implementations on stack")
+set(OOMPH_ENABLE_BARRIER ON CACHE BOOL "enable thread barrier (disable for task based runtime)")
 mark_as_advanced(OOMPH_USE_FAST_PIMPL)
 
 # ---------------------------------------------------------------------

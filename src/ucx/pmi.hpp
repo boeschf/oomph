@@ -16,6 +16,7 @@
 #include <pmix.h>
 #include <pthread.h>
 #include <stdexcept>
+#include <cstring>
 
 namespace oomph
 {

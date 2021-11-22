@@ -75,6 +75,8 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake/config.hpp.in
     ${CMAKE_CURRENT_BINARY_DIR}/include/oomph/config.hpp @ONLY)
 install(FILES ${PROJECT_BINARY_DIR}/include/oomph/config.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/oomph)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake_config.inc.in 
+    ${CMAKE_CURRENT_BINARY_DIR}/include/oomph/cmake_config.inc)
 
 # ---------------------------------------------------------------------
 # testing

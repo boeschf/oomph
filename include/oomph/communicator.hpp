@@ -45,6 +45,7 @@ class communicator
     friend class channel::sender_impl;
     friend class channel::receiver_impl;
 
+  public:
     struct schedule
     {
         std::size_t scheduled_sends = 0;
@@ -120,12 +121,7 @@ class communicator
     };
 
   private:
-    communicator(impl_type* impl_) noexcept
-    : m_impl{impl_}
-    , m_pool{std::make_unique<boost::pool<>>(sizeof(detail::request_state), 128)}
-    , m_schedule{std::make_unique<schedule>()}
-    {
-    }
+    communicator(impl_type* impl_);
 
   public:
     communicator(communicator const&) = delete;
@@ -365,7 +361,7 @@ class communicator
         send_request r(shared_request_ptr(m_pool.get(), m_impl, &scheduled));
         const auto   s = msg.size();
         auto         m_ptr = msg.m.m_heap_ptr.get();
-        auto         m = new msg_ref_count{std::move(msg), {(int)neighs.size()}, neighs};
+        auto         m = new msg_ref_count{std::move(msg), (int)neighs.size(), neighs};
 
         for (auto id : neighs)
         {

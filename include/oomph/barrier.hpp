@@ -9,7 +9,10 @@
  */
 #pragma once
 
-#include <oomph/communicator.hpp>
+#include <oomph/config.hpp>
+
+#if OOMPH_ENABLE_BARRIER
+#include <oomph/context.hpp>
 #include <atomic>
 
 namespace oomph
@@ -40,51 +43,48 @@ class barrier
     std::size_t                 m_threads;
     mutable std::atomic<size_t> b_count{0};
     mutable std::atomic<size_t> b_count2;
+    MPI_Comm                    m_mpi_comm;
+    context_impl const*         m_context;
 
     friend class test_barrier;
 
   public: // ctors
-    barrier(size_t n_threads = 1);
+    barrier(context const& c, size_t n_threads = 1);
     barrier(const barrier&) = delete;
     barrier(barrier&&) = delete;
 
   public: // public member functions
     int size() const noexcept { return m_threads; }
 
-    /**
-     * This is the most general barrier, it synchronize threads and ranks.
-     *
-     * @param comm The communicator object associated with the thread.
-     */
-    void operator()(communicator& comm) const;
+    /** This is the most general barrier, it synchronize threads and ranks. */
+    void operator()() const;
 
     /**
      * This function can be used to synchronize ranks.
      * Only one thread per rank must call this function.
      * If other threads exist, they hace to be synchronized separately,
      * maybe using the in_node function.
-     *
-     * @param comm The communicator object associated with the thread.
      */
-    void rank_barrier(communicator& comm) const;
+    void rank_barrier() const;
 
     /**
      * This function synchronize the threads in a rank. The number of threads that need to participate
      * is indicated in the construction of the barrier object, whose reference is shared among the
      * participating threads.
-     *
-     * @param comm The communicator object associated with the thread.
      */
-    void in_node(communicator& comm) const
+    void thread_barrier() const
     {
-        in_node1(comm);
-        in_node2(comm);
+        in_node1();
+        in_node2();
     }
 
   private:
-    bool in_node1(communicator& comm) const;
+    bool in_node1() const;
 
-    void in_node2(communicator& comm) const;
+    void in_node2() const;
 };
 
 } // namespace oomph
+#else
+#pragma message("barrier is not enabled in this configuration")
+#endif // OOMPH_ENABLE_BARRIER

@@ -1,32 +1,20 @@
-
+if (OOMPH_ENABLE_BARRIER)
 set(benchmarks
     bench_p2p_bi_ft_wait
     bench_p2p_bi_ft_avail
     bench_p2p_bi_cb_wait
     bench_p2p_bi_cb_avail)
 
+set(mpi_avail_benchmarks
+    mpi_p2p_bi_avail)
+
+set(mpi_wait_benchmarks
+    mpi_p2p_bi_wait)
+
 set(OOMPH_BENCHMARKS_MT OFF CACHE BOOL "Multithreaded benchmarks")
 if (OOMPH_BENCHMARKS_MT)
     find_package(OpenMP REQUIRED)
 endif()
-
-#function(compile_benchmark t_)
-#    set(t ${t_}_obj)
-#    add_library(${t} OBJECT ${t_}_mt.cpp)
-#    oomph_target_compile_options(${t})
-#    target_link_libraries(${t} PRIVATE MPI::MPI_CXX)
-#    target_link_libraries(${t} PUBLIC oomph)
-#endfunction()
-#
-#function(compile_benchmark_mt t_)
-#    set(t ${t_}_mt_obj)
-#    add_library(${t} OBJECT ${t_}_mt.cpp)
-#    oomph_target_compile_options(${t})
-#    target_compile_definitions(${t} PRIVATE OOMPH_BENCHMARKS_MT)
-#    target_link_libraries(${t} PRIVATE MPI::MPI_CXX)
-#    target_link_libraries(${t} PUBLIC oomph)
-#    target_link_libraries(${t} PRIVATE OpenMP::OpenMP_CXX)
-#endfunction()
 
 function(make_benchmark t_ lib)
     set(t ${t_}_${lib})
@@ -46,13 +34,49 @@ function(make_benchmark_mt t_ lib)
     target_link_libraries(${t} PRIVATE OpenMP::OpenMP_CXX)
 endfunction()
 
-## compile an object library for each benchmark
-#foreach(t ${benchmarks})
-#    compile_benchmark(${t})
-#    if (OOMPH_BENCHMARKS_MT)
-#        compile_benchmark_mt(${t})
-#    endif()
-#endforeach()
+function(make_mpi_benchmark t_ flag)
+    set(t ${t_}_${flag})
+    add_executable(${t} ${t_}_mt.cpp)
+    if(${flag} STREQUAL "testany")
+        target_compile_definitions(${t} PRIVATE USE_TESTANY)
+    elseif(${flag} STREQUAL "waitall")
+        target_compile_definitions(${t} PRIVATE USE_WAITALL)
+    endif()
+    oomph_target_compile_options(${t})
+    target_link_libraries(${t} PRIVATE MPI::MPI_CXX)
+endfunction()
+
+function(make_mpi_benchmark_mt t_ flag)
+    set(t ${t_}_mt_${flag})
+    add_executable(${t} ${t_}_mt.cpp)
+    if(${flag} STREQUAL "testany")
+        target_compile_definitions(${t} PRIVATE USE_TESTANY)
+    elseif(${flag} STREQUAL "waitall")
+        target_compile_definitions(${t} PRIVATE USE_WAITALL)
+    endif()
+    oomph_target_compile_options(${t})
+    target_compile_definitions(${t} PRIVATE OOMPH_BENCHMARKS_MT)
+    target_link_libraries(${t} PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(${t} PRIVATE MPI::MPI_CXX)
+endfunction()
+
+foreach(t ${mpi_avail_benchmarks})
+    make_mpi_benchmark(${t} test)
+    make_mpi_benchmark(${t} testany)
+    if (OOMPH_BENCHMARKS_MT)
+        make_mpi_benchmark_mt(${t} test)
+        make_mpi_benchmark_mt(${t} testany)
+    endif()
+endforeach()
+
+foreach(t ${mpi_wait_benchmarks})
+    make_mpi_benchmark(${t} wait)
+    make_mpi_benchmark(${t} waitall)
+    if (OOMPH_BENCHMARKS_MT)
+        make_mpi_benchmark_mt(${t} wait)
+        make_mpi_benchmark_mt(${t} waitall)
+    endif()
+endforeach()
 
 # link to object libraries with each backend
 if (OOMPH_WITH_MPI)
@@ -80,4 +104,7 @@ if (OOMPH_WITH_LIBFABRIC)
             make_benchmark_mt(${t} libfabric)
         endif()
     endforeach()
+endif()
+else()
+    message("warning: benchmarks cannot be built unless barrier is enabled")
 endif()
