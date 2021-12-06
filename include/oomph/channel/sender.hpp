@@ -79,8 +79,8 @@ class sender
 
   private:
 
-    detail::rma_buffer request_msg() { return m_sender.request_msg(); }
-    void invoke(detail::rma_buffer b) { m_sender.invoke(b); }
+    //detail::rma_buffer request_msg() { return m_sender.request_msg(); }
+    //void invoke(detail::rma_buffer b) { m_sender.invoke(b); }
 
   private:
     friend class oomph::future_traits<sender>;

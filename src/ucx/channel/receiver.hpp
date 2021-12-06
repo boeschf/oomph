@@ -259,15 +259,16 @@ class receiver_impl
 
     detail::rma_buffer request_msg()
     {
-        if (m_recv_state == recv_state::ready)
-        {
-            m_recv_state = recv_state::wait;
-            return {};
-        }
-        if (m_recv_state == recv_state::read)
-        //if (m_recv_state != recv_state::ready) return {};
-        //m_recv_state = send_state::wait;
-        //return {m_buffer.get(),m_size,0}; 
+        return {};
+    //    if (m_recv_state == recv_state::ready)
+    //    {
+    //        m_recv_state = recv_state::wait;
+    //        return {};
+    //    }
+    //    if (m_recv_state == recv_state::read)
+    //    //if (m_recv_state != recv_state::ready) return {};
+    //    //m_recv_state = send_state::wait;
+    //    //return {m_buffer.get(),m_size,0}; 
     }
     
     void return_msg(detail::rma_buffer)

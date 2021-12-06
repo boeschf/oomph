@@ -101,14 +101,14 @@ struct sender
 
     ~sender();
 
-    void invoke(rma_buffer b)
-    {
-        assert((bool)b);
-        assert(m_fcts.size());
-        m_fcts.front()(b);
-        m_fcts.pop_front();
-        return_msg(b);
-    }
+    //void invoke(rma_buffer b)
+    //{
+    //    assert((bool)b);
+    //    assert(m_fcts.size());
+    //    m_fcts.front()(b);
+    //    m_fcts.pop_front();
+    //    return_msg(b);
+    //}
 
     rma_buffer  request_msg();          // progress
     void        return_msg(rma_buffer); // progress

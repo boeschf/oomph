@@ -45,16 +45,16 @@ TEST_F(mpi_test_fixture, channel_ctor)
         if (!receiver_f.is_ready()) receiver_f.progress();
     }
 
-    auto s = sender_f.get();
-    auto r = receiver_f.get();
+    //auto s = sender_f.get();
+    //auto r = receiver_f.get();
 
-    s.write([](channel::rma_buffer<int> b){ std::cout << "fill cb invoked" << std::endl; });
-    std::cout << s.scheduled_sends() << std::endl;
+    //s.write([](channel::rma_buffer<int> b){ std::cout << "fill cb invoked" << std::endl; });
+    //std::cout << s.scheduled_sends() << std::endl;
 
-    s.progress();
-    s.progress();
-    s.progress();
-    std::cout << s.scheduled_sends() << std::endl;
+    //s.progress();
+    //s.progress();
+    //s.progress();
+    //std::cout << s.scheduled_sends() << std::endl;
 
     //auto w = make_writer(s);
     //auto w = write([](channel::rma_buffer<int>* first, std::size_t count){}, s);
