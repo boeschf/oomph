@@ -18,10 +18,20 @@
 //
 namespace oomph { namespace libfabric
 {
-struct endpoint_wrapper;
-
 // cppcheck-suppress ConfigurationNotChecked
 static hpx::debug::enable_print<false> ctx_deb("CONTEXT");
+
+struct endpoint_wrapper;
+struct operation_context;
+
+
+struct queue_data
+{
+    using cb_ptr_t = util::detail::unique_function<void>*;
+    //
+    operation_context *ctxt;
+    cb_ptr_t           user_cb_;
+};
 
 // This struct holds the ready state of a future
 // we must also store the context used in libfabric, in case
@@ -35,16 +45,18 @@ private:
 
 public:
     using cb_ptr_t = util::detail::unique_function<void>*;
-    using lockfree_queue = boost::lockfree::queue<cb_ptr_t,
+    using lockfree_queue = boost::lockfree::queue<queue_data,
         boost::lockfree::fixed_sized<false>, boost::lockfree::allocator<std::allocator<void>>>;
     //
     cb_ptr_t        user_cb_;
     lockfree_queue *callback_queue_;
+    lockfree_queue *cancel_queue_;
 
-    operation_context(cb_ptr_t user_cb, lockfree_queue *queue)
+    operation_context(cb_ptr_t user_cb, lockfree_queue *queue, lockfree_queue *cancelq)
       : context_reserved_space()
       , user_cb_(user_cb)
       , callback_queue_(queue)
+      , cancel_queue_(cancelq)
     {
         [[maybe_unused]] auto scp = ctx_deb.scope(hpx::debug::ptr(this), __func__, user_cb_);
     }
@@ -63,14 +75,11 @@ public:
 
     // --------------------------------------------------------------------
     // When a completion returns FI_ECANCELED, this is called
-    // we only need to delete the callback, not invoke it
     void handle_cancelled()
     {
         [[maybe_unused]] auto scp = ctx_deb.scope(hpx::debug::ptr(this), __func__, user_cb_);
-        user_cb_->invoke();
-        delete user_cb_;
-        const void *ptr = (void*)(0x0000000000000000);
-        user_cb_ = (cb_ptr_t)ptr;
+        // enqueue the cancelled/callback
+        while (!cancel_queue_->push(queue_data{this,user_cb_})) {}
     }
 
     // --------------------------------------------------------------------
@@ -80,18 +89,11 @@ public:
         [[maybe_unused]] auto scp = ctx_deb.scope(hpx::debug::ptr(this), __func__, user_cb_);
         if (!threadlocal) {
             // enqueue the callback
-            while (!callback_queue_->push(user_cb_)) {}
+            while (!callback_queue_->push(queue_data{this,user_cb_})) {}
         }
         else {
-            if (user_cb_ == reinterpret_cast<decltype(user_cb_)>(0xffffffffffffffff))
-            {
-                ctx_deb.error(hpx::debug::ptr(this), __func__, user_cb_);
-                throw std::runtime_error("Invalid callback");
-            }
             user_cb_->invoke();
             delete user_cb_;
-            // mark this callback as invalid
-            user_cb_ = reinterpret_cast<decltype(user_cb_)>(0xffffffffffffffff);
         }
         return 1;
     }
@@ -103,13 +105,11 @@ public:
         [[maybe_unused]] auto scp = ctx_deb.scope(hpx::debug::ptr(this), __func__, user_cb_);
         if (!threadlocal) {
             // enqueue the callback
-            while (!callback_queue_->push(user_cb_)) {}
+            while (!callback_queue_->push(queue_data{this,user_cb_})) {}
         }
         else {
             user_cb_->invoke();
             delete user_cb_;
-            const void *ptr = (void*)(0x3333333333333333);
-            user_cb_ = (cb_ptr_t)ptr;
         }
         return 1;
     }

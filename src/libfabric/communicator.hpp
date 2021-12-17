@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <stack>
 
 #include <oomph/context.hpp>
 #include <oomph/communicator.hpp>
@@ -27,24 +28,23 @@ namespace oomph
 
 struct detail::request_state::reserved_t
 {
-    oomph::libfabric::operation_context operation_context_;
+    libfabric::operation_context operation_context_;
 };
 
 // cppcheck-suppress ConfigurationNotChecked
 static hpx::debug::enable_print<false> com_deb("COMMUNI");
-static hpx::debug::enable_print<true>  com_err("COMMUNI");
+static hpx::debug::enable_print<true> com_err("COMMUNI");
 
 class communicator_impl : public communicator_base<communicator_impl>
 {
     using rank_type = communicator::rank_type;
     using tag_type  = std::uint64_t;
     //
-    using segment_type = oomph::libfabric::memory_segment;
+    using segment_type = libfabric::memory_segment;
     using region_type = segment_type::handle_type;
 
     using cb_ptr_t = libfabric::operation_context::cb_ptr_t;
-    using callback_queue = boost::lockfree::queue<cb_ptr_t,
-        boost::lockfree::fixed_sized<false>, boost::lockfree::allocator<std::allocator<void>>>;
+    using callback_queue = libfabric::operation_context::lockfree_queue;
 
   public:
     context_impl       *m_context;
@@ -54,23 +54,25 @@ class communicator_impl : public communicator_base<communicator_impl>
     //
     callback_queue      m_send_cb_queue;
     callback_queue      m_recv_cb_queue;
+    callback_queue      m_recv_cb_cancel;
 
+    // --------------------------------------------------------------------
     communicator_impl(context_impl* ctxt)
     : communicator_base(ctxt)
     , m_context(ctxt)
     , m_ctag(0)
     , m_send_cb_queue(128)
     , m_recv_cb_queue(128)
+    , m_recv_cb_cancel(8)
     {
         OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("MPI_comm"), hpx::debug::ptr(mpi_comm())));
         m_tx_endpoint = m_context->get_controller()->get_tx_endpoint();
         m_rx_endpoint = m_context->get_controller()->get_rx_endpoint();
 
-#ifdef ADD_COMM_ID_TO_TAG
-
+        // seems like we don't need this any more, I don't want to delete it yet ...
         // this chunk of code might be needed if the same tag is used
         // simultaneously on differnt communicators
-
+#ifdef ADD_COMM_ID_TO_TAG
         const int random_msg_tag = 65535;
         if (rank()==0) {
             m_ctag = reinterpret_cast<std::uintptr_t>(this);
@@ -89,11 +91,13 @@ class communicator_impl : public communicator_base<communicator_impl>
 #endif
     }
 
+    // --------------------------------------------------------------------
     ~communicator_impl()
     {
         clear_callback_queues();
     }
 
+    // --------------------------------------------------------------------
     auto& get_heap() noexcept { return m_context->get_heap(); }
 
     // --------------------------------------------------------------------
@@ -129,11 +133,11 @@ class communicator_impl : public communicator_base<communicator_impl>
             OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("fi_tsend")
                                         , "tx endpoint", hpx::debug::ptr(m_tx_endpoint.get_ep())));
             if (ret == 0) {
-//                ++m_shared_state->m_controller->sends_posted_;
+                m_context->get_controller()->sends_posted_;
                 ok = true;
             }
             else if (ret == -FI_EAGAIN) {
-//                com_deb.error("Reposting fi_sendv / fi_tsendv");
+                com_deb.error("Reposting fi_sendv / fi_tsendv");
                 // no point stressing the system
                 progress();
             }
@@ -171,8 +175,6 @@ class communicator_impl : public communicator_base<communicator_impl>
         bool ok = false;
         while (!ok) {
             uint64_t ignore = 0;
-//            OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("fi_trecv")
-//                                        , "rx endpoint", hpx::debug::ptr(m_rx_endpoint.get_ep())));
             ssize_t ret = fi_trecv(rx_ep,
                 recv_region.get_address(),
                 recv_region.get_size(),
@@ -180,8 +182,8 @@ class communicator_impl : public communicator_base<communicator_impl>
                 FI_ADDR_UNSPEC, tag_, ignore, ctxt);
             OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("fi_trecv")
                                         , "rx endpoint", hpx::debug::ptr(m_rx_endpoint.get_ep())));
-            if (ret ==0) {
-                //++m_shared_state->m_controller->recvs_posted_;
+            if (ret==0) {
+                m_context->get_controller()->recvs_posted_;
                 ok = true;
             }
             else if (ret == -FI_EAGAIN)
@@ -207,7 +209,8 @@ class communicator_impl : public communicator_base<communicator_impl>
         auto &reg = ptr.handle_ref();
 
         libfabric::operation_context::cb_ptr_t cb_ptr = std::move(cb).release();
-        libfabric::operation_context *op_ctx = new (&req->reserved()->operation_context_) libfabric::operation_context(cb_ptr, &m_send_cb_queue);
+        libfabric::operation_context *op_ctx = new (&req->reserved()->operation_context_)
+                libfabric::operation_context(cb_ptr, &m_send_cb_queue, nullptr);
         assert(reinterpret_cast<void*>(op_ctx) == reinterpret_cast<void*>(&req->reserved()->operation_context_));
 
         OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("Send")
@@ -235,7 +238,7 @@ class communicator_impl : public communicator_base<communicator_impl>
         auto &reg = ptr.handle_ref();
 
         libfabric::operation_context::cb_ptr_t cb_ptr = std::move(cb).release();
-        libfabric::operation_context *op_ctx = new (&req->reserved()->operation_context_) libfabric::operation_context(cb_ptr, &m_recv_cb_queue);
+        libfabric::operation_context *op_ctx = new (&req->reserved()->operation_context_) libfabric::operation_context(cb_ptr, &m_recv_cb_queue, &m_recv_cb_cancel);
         assert(reinterpret_cast<void*>(op_ctx) == reinterpret_cast<void*>(&req->reserved()->operation_context_));
 
         OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("Recv")
@@ -274,20 +277,20 @@ class communicator_impl : public communicator_base<communicator_impl>
     {
         // work through ready callbacks, which were pushed to the queue
         // (by other threads)
-        m_send_cb_queue.consume_all([](cb_ptr_t user_cb_) {
-            [[maybe_unused]] auto scp = com_deb.scope("m_send_cb_queue.consume_all", user_cb_);
-            user_cb_->invoke();
-            delete user_cb_;
+        m_send_cb_queue.consume_all([](libfabric::queue_data &q) {
+            [[maybe_unused]] auto scp = com_deb.scope("m_send_cb_queue.consume_all", q.user_cb_);
+            q.user_cb_->invoke();
+            delete q.user_cb_;
             const void *ptr = (void*)(0x1111111111111111);
-            user_cb_ = (cb_ptr_t)ptr;
+            q.user_cb_ = (cb_ptr_t)ptr;
         });
 
-        m_recv_cb_queue.consume_all([](cb_ptr_t user_cb_) {
-            [[maybe_unused]] auto scp = com_deb.scope("m_recv_cb_queue.consume_all", user_cb_);
-            user_cb_->invoke();
-            delete user_cb_;
+        m_recv_cb_queue.consume_all([](libfabric::queue_data &q) {
+            [[maybe_unused]] auto scp = com_deb.scope("m_recv_cb_queue.consume_all", q.user_cb_);
+            q.user_cb_->invoke();
+            delete q.user_cb_;
             const void *ptr = (void*)(0x2222222222222222);
-            user_cb_ = (cb_ptr_t)ptr;
+            q.user_cb_ = (cb_ptr_t)ptr;
         });
     }
 
@@ -301,12 +304,13 @@ class communicator_impl : public communicator_base<communicator_impl>
     bool cancel_recv_cb(recv_request const& req)
     {
         // get the original message operation context
-        libfabric::operation_context *op_ctx = reinterpret_cast<libfabric::operation_context*>(&req.m_data->reserved()->operation_context_);
+        libfabric::operation_context *op_ctx = reinterpret_cast<libfabric::operation_context*>
+                (&req.m_data->reserved()->operation_context_);
 
         // replace the callback in the original message context with a cancel one
-        bool found = false;
-        util::unique_function<void(void)> temp = [&](){ found=true; };
-        auto orig_cb = std::exchange(op_ctx->user_cb_, temp.release());
+//        mutable bool found = false;
+//        util::unique_function<void(void)> temp = [&](){ found = true; };
+//        auto orig_cb = std::exchange(op_ctx->user_cb_, temp.release());
 
         // submit the cancellation request
         bool ok = (fi_cancel(&m_rx_endpoint.get_ep()->fid, op_ctx) == 0);
@@ -314,36 +318,38 @@ class communicator_impl : public communicator_base<communicator_impl>
             , "ok", ok
             , "op_ctx", hpx::debug::ptr(op_ctx)));
 
-        // if the cancellation request is ok, poll until we know if it worked
-        // there is an implicit race here as another thread might get the completion
-        if (ok) {
-            // swap the callback with ours
-            // now poll until the callback is triggered
-            while (!found) {
-                // poll receives (sends can't be cancelled)
-                const void *ptr = (void*)(0xffffffffffffffff);
-                m_context->get_controller()->poll_recv_queue(m_rx_endpoint.get_rx_cq());
+        // if the cancel operation failed completely, return
+        if (!ok) return false;
 
-                if (reinterpret_cast<void*>(op_ctx->user_cb_) == ptr) {
+        bool found = false;
+        while (!found)
+        {
+            m_context->get_controller()->poll_recv_queue(m_rx_endpoint.get_rx_cq());
+            // otherwise, poll until we know if it worked
+            std::stack<libfabric::queue_data> temp_stack;
+            libfabric::queue_data temp;
+            while (!found && m_recv_cb_cancel.pop(temp)) {
+                if (temp.ctxt == op_ctx) {
+                    // our recv was cancelled correctly
                     found = true;
-                    OOMPH_DP_ONLY(com_err, error(hpx::debug::str<>("Cancel")
-                        , "ERROR"
+                    delete op_ctx->user_cb_;
+                    OOMPH_DP_ONLY(com_deb, debug(hpx::debug::str<>("Cancel")
+                        , "succeeded"
                         , "op_ctx", hpx::debug::ptr(op_ctx)));
                 }
-                if (op_ctx->user_cb_ == nullptr) {
-                    found = true;
-//                    OOMPH_DP_ONLY(com_err, error(hpx::debug::str<>("Cancel")
-//                        , "NULL ERROR"
-//                        , "op_ctx", hpx::debug::ptr(op_ctx)));
+                else {
+                    // a different cancel operation
+                    temp_stack.push(temp);
                 }
             }
-//            OOMPH_DP_ONLY(com_err, error(hpx::debug::str<>("Cancel")
-//                , "Triggered"
-//                , "op_ctx", hpx::debug::ptr(op_ctx)));
-            delete orig_cb;
-            return true;
+            // return any weird unhandled cancels back to the queue
+            while (!temp_stack.empty()){
+                libfabric::queue_data temp = temp_stack.top();
+                temp_stack.pop();
+                m_recv_cb_cancel.push(temp);
+            }
         }
-        return ok;
+        return found;
     }
 };
 

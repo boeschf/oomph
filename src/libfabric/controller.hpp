@@ -349,12 +349,12 @@ namespace oomph { namespace libfabric {
 
     public:
         //
-        performance_counter<int, true> sends_posted_;
-        performance_counter<int, true> recvs_posted_;
-        performance_counter<int, true> sends_readied_;
-        performance_counter<int, true> recvs_readied_;
-        performance_counter<int, true> sends_complete;
-        performance_counter<int, true> recvs_complete;
+        performance_counter<int, false> sends_posted_;
+        performance_counter<int, false> recvs_posted_;
+        performance_counter<int, false> sends_readied_;
+        performance_counter<int, false> recvs_readied_;
+        performance_counter<int, false> sends_complete;
+        performance_counter<int, false> recvs_complete;
 
         void finvoke(const char *msg, const char *err, int ret) {
             OOMPH_DP_ONLY(cnt_deb, trace(debug::str<>(msg)));
@@ -900,7 +900,7 @@ namespace oomph { namespace libfabric {
 
         // --------------------------------------------------------------------
         struct fid_ep* new_endpoint_active(struct fid_domain* domain,
-            struct fi_info* info, void const* src_addr, bool rootnode)
+            struct fi_info* info, void const* /*src_addr*/, bool /*rootnode*/)
         {
             // don't allow multiple threads to call endpoint create at the same time
             scoped_lock lock(controller_mutex_);
@@ -927,6 +927,9 @@ namespace oomph { namespace libfabric {
                 hints->src_addrlen = sizeof(struct sockaddr_in);
             }
 #endif
+*/
+
+/*
             int flags = 0;
             struct fi_info* new_hints = nullptr;
             int ret = fi_getinfo(FI_VERSION(LIBFABRIC_FI_VERSION_MAJOR,
@@ -934,7 +937,7 @@ namespace oomph { namespace libfabric {
                 nullptr, nullptr, flags, hints, &new_hints);
             if (ret)
                 throw fabric_error(ret, "fi_getinfo");
-
+*/
             // If we are the root node, then create connection with the right port address
             //            if (rank == 0) {
             //                OOMPH_DP_ONLY(cnt_deb, debug(debug::str<>("root locality = src")
@@ -947,7 +950,7 @@ namespace oomph { namespace libfabric {
             //                struct sockaddr_in *socket_data = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
             //                memcpy(socket_data, here_.fabric_data(), locality_defs::array_size);
 
-            //                /* Set src addr hints (FI_SOURCE must not be set in that case) */
+            //                // Set src addr hints (FI_SOURCE must not be set in that case)
             //                free(hints->src_addr);
             //                hints->addr_format = na_ofi_prov_addr_format[na_ofi_domain->prov_type];
             //                hints->src_addr = src_addr;

@@ -73,6 +73,7 @@ struct region_provider
 
 struct handle_base
 {
+    virtual ~handle_base() {}
     virtual uint64_t       get_remote_key(void) const = 0;
     virtual void          *get_local_key(void) const = 0;
     virtual unsigned char *get_address(void) const = 0;
@@ -90,7 +91,12 @@ struct memory_handle : handle_base
 
     // --------------------------------------------------------------------
     // Default constructor creates unusable handle(region)
-    memory_handle() {}
+    memory_handle()
+        : address_{nullptr}
+        , region_{nullptr}
+        , size_{0}
+        , used_space_{0}
+    {}
     memory_handle(memory_handle const&) noexcept = default;
     memory_handle& operator=(memory_handle const&) noexcept = default;
 
