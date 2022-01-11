@@ -25,6 +25,10 @@ set(_hwmalloc_tag        "master")
 if(NOT _hwmalloc_already_fetched)
     message(STATUS "Fetching HWMALLOC ${_hwmalloc_tag} from ${_hwmalloc_repository}")
 endif()
+
+if(EXISTS ${PROJECT_SOURCE_DIR}/extern/hwmalloc)
+    set(FETCHCONTENT_SOURCE_DIR_HWMALLOC ${PROJECT_SOURCE_DIR}/extern/hwmalloc)
+endif()
 include(FetchContent)
 FetchContent_Declare(
     hwmalloc

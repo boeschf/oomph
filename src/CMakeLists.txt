@@ -11,5 +11,6 @@ if (OOMPH_WITH_UCX)
 endif()
 
 if (OOMPH_WITH_LIBFABRIC)
-    #add_subdirectory(libfabric)
+    #message("cmake -DOOMPH_WITH_TESTING=ON -DOOMPH_WITH_LIBFABRIC=ON -DLIBFABRIC_ROOT=/apps/daint/UES/biddisco/gcc/10.2.0/libfabric -DOOMPH_LIBFABRIC_PROVIDER=gni -DMPIEXEC_EXECUTABLE=/usr/bin/srun /apps/daint/UES/biddisco/src/ghex/extern/oomph/")
+    add_subdirectory(libfabric)
 endif()
