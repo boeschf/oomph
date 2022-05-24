@@ -99,7 +99,16 @@ class communicator_impl : public communicator_base<communicator_impl>
         }
         else
         {
-            while (ucp_worker_progress(m_recv_worker->get())) {}
+            for (unsigned int i=0; i<10; ++i)
+            {
+                if (m_mutex.try_lock())
+                {
+                    auto p = ucp_worker_progress(m_recv_worker->get());
+                    m_mutex.unlock();
+                    if (!p) break;
+                }
+            }
+            //while (ucp_worker_progress(m_recv_worker->get())) {}
         }
         // work through ready recv callbacks, which were pushed to the queue by other threads
         // (including this thread)

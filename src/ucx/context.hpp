@@ -195,7 +195,7 @@ class context_impl : public context_base
         if (m_thread_safe) m_mutex.lock();
         ucp_request_cancel(m_worker->get(), s->m_ucx_ptr);
         while (ucp_worker_progress(m_worker->get())) {}
-        if (m_thread_safe) m_mutex.unlock();
+
         // check whether the cancelled callback was enqueued by consuming all queued cancelled
         // callbacks and putting them in a temporary vector
         bool                                                           found = false;
@@ -211,6 +211,8 @@ class context_impl : public context_base
         // re-enqueue all callbacks which were not identical with the current callback
         for (auto x : m_cancel_recv_req_vec)
             while (!m_cancel_recv_req_queue.push(x)) {}
+
+        if (m_thread_safe) m_mutex.unlock();
 
         // delete callback here if it was actually cancelled
         if (found)
