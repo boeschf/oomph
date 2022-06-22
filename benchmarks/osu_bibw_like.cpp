@@ -13,6 +13,8 @@
 #include <vector>
 
 #define OOMPH_BENCHMARKS_PURE_MPI
+#define OOMPH_BENCHMARKS_PRINT_INTERMEDIATE
+
 #include "./mpi_environment.hpp"
 #include "./args.hpp"
 #include "./timer.hpp"
@@ -66,6 +68,7 @@ main(int argc, char* argv[])
     auto const my_id = env.rank;
     int const  warmup = 5;
     int const  skip = 10 * (warmup + 1);
+    int const  delta_i = iterations / 10;
 
     int send_tag = (my_id == 0 ? 100 : 10);
     int recv_tag = (my_id == 0 ? 10 : 100);
@@ -88,7 +91,14 @@ main(int argc, char* argv[])
         exchange(warmup, s_buf, r_buf, send_request, recv_request, rank, send_tag, recv_tag);
         t.tic();
         exchange(s_buf, r_buf, send_request, recv_request, rank, send_tag, recv_tag);
+#ifdef OOMPH_BENCHMARKS_PRINT_INTERMEDIATE
+        double const t_ = t.toc();
+        if (i % delta_i == 0)
+            std::cout << my_id << " total bwdt  MB/s:      " << (2 * size / t_) * window_size
+                      << "\n";
+#else
         t.toc();
+#endif
     }
 
     t0.toc();
