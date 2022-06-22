@@ -209,7 +209,7 @@ main(int argc, char* argv[])
     if (rank == 1)
     {
         t1.vtoc();
-        t1.vtoc("final ", (double)niter * size * buff_size *inflight);
+        t1.vtoc("final ", (double)niter * size * buff_size);
     }
 
     return 0;
