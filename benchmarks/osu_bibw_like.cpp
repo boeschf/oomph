@@ -64,8 +64,8 @@ main(int argc, char* argv[])
     auto const size = cmd_args.buff_size;
     auto const iterations = (cmd_args.n_iter + window_size - 1) / window_size;
     auto const my_id = env.rank;
-    int const  skip = 10;
     int const  warmup = 5;
+    int const  skip = 10 * (warmup + 1);
 
     int send_tag = (my_id == 0 ? 100 : 10);
     int recv_tag = (my_id == 0 ? 10 : 100);
@@ -82,8 +82,7 @@ main(int argc, char* argv[])
 
     env.barrier();
 
-    exchange(skip * (warmup + 1), s_buf, r_buf, send_request, recv_request, rank, send_tag,
-        recv_tag);
+    exchange(skip, s_buf, r_buf, send_request, recv_request, rank, send_tag, recv_tag);
     for (int i = 0; i < iterations; ++i)
     {
         exchange(warmup, s_buf, r_buf, send_request, recv_request, rank, send_tag, recv_tag);
