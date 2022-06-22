@@ -9,12 +9,6 @@
  * 
  */
 
-//#include <unistd.h> // sysconf
-//#include <stdlib.h> // posix_mem_align
-//#include <cstring>  // memset
-//#include <cstdlib>
-//#include <new>
-//#include <limits>
 #include <cassert>
 #include <vector>
 
@@ -29,7 +23,8 @@ template<typename T>
 using aligned_vector = std::vector<T, oomph::aligned_allocator<T>>;
 
 template<typename B, typename R>
-void exchange(B& s_buf, B& r_buf, R& s_req, R& r_req, int rank, int s_tag, int r_tag)
+void
+exchange(B& s_buf, B& r_buf, R& s_req, R& r_req, int rank, int s_tag, int r_tag)
 {
     for (std::size_t j = 0; j < r_buf.size(); ++j)
         MPI_Irecv(r_buf[j].data(), r_buf[j].size(), MPI_CHAR, rank, r_tag, MPI_COMM_WORLD,
@@ -44,10 +39,10 @@ void exchange(B& s_buf, B& r_buf, R& s_req, R& r_req, int rank, int s_tag, int r
 }
 
 template<typename B, typename R>
-void exchange(int n, B& s_buf, B& r_buf, R& s_req, R& r_req, int rank, int s_tag, int r_tag)
+void
+exchange(int n, B& s_buf, B& r_buf, R& s_req, R& r_req, int rank, int s_tag, int r_tag)
 {
-    for (int i=0; i<n; ++i)
-        exchange(s_buf, r_buf, s_req, r_req, rank, s_tag, r_tag);
+    for (int i = 0; i < n; ++i) exchange(s_buf, r_buf, s_req, r_req, rank, s_tag, r_tag);
 }
 
 int
@@ -67,11 +62,14 @@ main(int argc, char* argv[])
 
     auto const window_size = cmd_args.inflight;
     auto const size = cmd_args.buff_size;
-    auto const iterations = (cmd_args.n_iter+window_size-1)/window_size;
+    auto const iterations = (cmd_args.n_iter + window_size - 1) / window_size;
     auto const my_id = env.rank;
-    int const skip = 10;
-    int const warmup = 5;
+    int const  skip = 10;
+    int const  warmup = 5;
 
+    int send_tag = (my_id == 0 ? 100 : 10);
+    int recv_tag = (my_id == 0 ? 10 : 100);
+    int rank = (my_id == 0 ? 1 : 0);
 
     std::vector<MPI_Request> send_request(window_size);
     std::vector<MPI_Request> recv_request(window_size);
@@ -84,36 +82,24 @@ main(int argc, char* argv[])
 
     env.barrier();
 
-    if (my_id == 0)
+    exchange(skip * (warmup + 1), s_buf, r_buf, send_request, recv_request, rank, send_tag,
+        recv_tag);
+    for (int i = 0; i < iterations; ++i)
     {
-        exchange(skip*(warmup+1), s_buf, r_buf, send_request, recv_request, 1, 100, 10);
-        for (int i = 0; i < iterations; ++i)
-        {
-            exchange(warmup, s_buf, r_buf, send_request, recv_request, 1, 100, 10);
-            t.tic();
-            exchange(s_buf, r_buf, send_request, recv_request, 1, 100, 10);
-            t.toc();
-        }
-    }
-    else
-    {
-        exchange(skip*(warmup+1), s_buf, r_buf, send_request, recv_request, 0, 10, 100);
-        for (int i = 0; i < iterations; ++i)
-        {
-            exchange(warmup, s_buf, r_buf, send_request, recv_request, 0, 10, 100);
-            t.tic();
-            exchange(s_buf, r_buf, send_request, recv_request, 0, 10, 100);
-            t.toc();
-        }
+        exchange(warmup, s_buf, r_buf, send_request, recv_request, rank, send_tag, recv_tag);
+        t.tic();
+        exchange(s_buf, r_buf, send_request, recv_request, rank, send_tag, recv_tag);
+        t.toc();
     }
 
     t0.toc();
 
     if (my_id == 0)
     {
-        std::cout << "elapsed:   " << t0.sum()/1.0e6 << "s" << std::endl;
-        std::cout << "time:      " << t.sum()/1.0e6 << "s" << std::endl;
-        std::cout << "final MB/s:      " << 2*((iterations/t.sum())*size)*window_size << "\n";
+        std::cout << "elapsed:   " << t0.sum() / 1.0e6 << "s" << std::endl;
+        std::cout << "time:      " << t.sum() / 1.0e6 << "s" << std::endl;
+        std::cout << "final MB/s:      " << 2 * ((iterations / t.sum()) * size) * window_size
+                  << "\n";
     }
     return 0;
 }
