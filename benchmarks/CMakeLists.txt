@@ -12,6 +12,9 @@ set(mpi_avail_benchmarks
 set(mpi_wait_benchmarks
     mpi_p2p_bi_wait)
 
+set(osu_like_benchmarks
+    osu_bibw_like)
+
 set(OOMPH_BENCHMARKS_MT OFF CACHE BOOL "Multithreaded benchmarks")
 if (OOMPH_BENCHMARKS_MT)
     find_package(OpenMP REQUIRED)
@@ -61,6 +64,13 @@ function(make_mpi_benchmark_mt t_ flag)
     target_link_libraries(${t} PRIVATE MPI::MPI_CXX)
 endfunction()
 
+function(make_osu_like_benchmark t_)
+    set(t ${t_})
+    add_executable(${t} ${t_}.cpp)
+    oomph_target_compile_options(${t})
+    target_link_libraries(${t} PRIVATE MPI::MPI_CXX)
+endfunction()
+
 foreach(t ${mpi_avail_benchmarks})
     make_mpi_benchmark(${t} test)
     make_mpi_benchmark(${t} testany)
@@ -77,6 +87,10 @@ foreach(t ${mpi_wait_benchmarks})
         make_mpi_benchmark_mt(${t} wait)
         make_mpi_benchmark_mt(${t} waitall)
     endif()
+endforeach()
+
+foreach(t ${osu_like_benchmarks})
+    make_osu_like_benchmark(${t})
 endforeach()
 
 # link to object libraries with each backend

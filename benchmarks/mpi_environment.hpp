@@ -33,13 +33,16 @@ struct mpi_environment
         }
         else
         {
-            MPI_Init_thread(&argc, &argv, MPI_THREAD_SINGLE, &mode);
+            //MPI_Init_thread(&argc, &argv, MPI_THREAD_SINGLE, &mode);
+            MPI_Init(&argc, &argv);
         }
         MPI_Comm_size(MPI_COMM_WORLD, &size);
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     }
 
     mpi_environment(mpi_environment const&) = delete;
+
+    void barrier() const { MPI_Barrier(MPI_COMM_WORLD); }
 
     ~mpi_environment()
     {
