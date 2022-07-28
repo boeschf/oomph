@@ -260,7 +260,7 @@ class controller : public controller_base<controller>
                 (void)err_sz;
 
                 // flags might not be set correctly
-                if (e.flags == (FI_MSG | FI_SEND))
+                if ((e.flags & (FI_MSG | FI_SEND | FI_TAGGED)) != 0)
                 {
                     NS_DEBUG::cnt_err.error("txcq Error FI_EAVAIL for "
                                             "FI_SEND with len",
@@ -268,7 +268,7 @@ class controller : public controller_base<controller>
                         NS_DEBUG::dec<3>(e.err), "flags", debug::bin<16>(e.flags), "error",
                         fi_cq_strerror(send_cq, e.prov_errno, e.err_data, (char*)e.buf, e.len));
                 }
-                else if (e.flags & FI_RMA)
+                else if ((e.flags & FI_RMA) != 0)
                 {
                     NS_DEBUG::cnt_err.error("txcq Error FI_EAVAIL for "
                                             "FI_RMA with len",
@@ -295,7 +295,7 @@ class controller : public controller_base<controller>
                         fi_tostr(&entry[i].flags, FI_TYPE_CQ_EVENT_FLAGS), "(",
                         debug::dec<>(entry[i].flags), ")", "context",
                         NS_DEBUG::ptr(entry[i].op_context), "length", debug::hex<6>(entry[i].len)));
-                if ((entry[i].flags & (FI_TAGGED | FI_SEND)) != 0)
+                if ((entry[i].flags & (FI_TAGGED | FI_SEND | FI_MSG)) != 0)
                 {
                     DEBUG(NS_DEBUG::cnt_deb,
                         debug(debug::str<>("Completion"), "txcq tagged send completion",
@@ -368,7 +368,7 @@ class controller : public controller_base<controller>
                     handler->handle_cancelled();
                     return 0;
                 }
-                else if (e.err != FI_SUCCESS)
+                else
                 {
                     NS_DEBUG::cnt_err.error("rxcq Error ??? ", "err", debug::dec<>(-e.err), "flags",
                         debug::hex<6>(e.flags), "len", debug::hex<6>(e.len), "context",
