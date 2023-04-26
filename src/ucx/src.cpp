@@ -19,6 +19,7 @@ namespace oomph
 communicator_impl*
 context_impl::get_communicator()
 {
+#ifdef OOMPH_UCX_USE_MULTIPLE_ENDPOINTS
     auto send_worker = std::make_unique<worker_type>(get(), m_db,
         (m_thread_safe ? UCS_THREAD_MODE_SERIALIZED : UCS_THREAD_MODE_SINGLE));
     auto send_worker_ptr = send_worker.get();
@@ -33,6 +34,10 @@ context_impl::get_communicator()
     }
     auto comm =
         new communicator_impl{this, m_thread_safe, m_worker.get(), send_worker_ptr, m_mutex};
+#else
+    auto comm =
+        new communicator_impl{this, m_thread_safe, m_worker.get(), m_worker.get(), m_mutex};
+#endif
     m_comms_set.insert(comm);
     return comm;
 }
@@ -46,6 +51,7 @@ context_impl::~context_impl()
     double                  elapsed = 0.0;
     static constexpr double t_timeout = 1000;
 
+#ifdef OOMPH_UCX_USE_MULTIPLE_ENDPOINTS
     // close endpoints while also progressing the receive worker
     std::vector<endpoint_t::close_handle> handles;
     for (auto& w_ptr : m_workers)
@@ -75,6 +81,7 @@ context_impl::~context_impl()
         // free all requests for the unclosed endpoints
         for (auto& h : handles) ucp_request_free(h.m_status);
     }
+#endif
 
     // issue another non-blocking barrier while progressing the receive worker in order to flush all
     // remaining (remote) endpoints which are connected to this receive worker
@@ -89,7 +96,9 @@ context_impl::~context_impl()
     }
 
     // receive worker should not have connected to any endpoint
+#ifdef OOMPH_UCX_USE_MULTIPLE_ENDPOINTS
     assert(m_worker->m_endpoint_cache.size() == 0);
+#endif
 
     // another MPI barrier to be sure
     MPI_Barrier(m_mpi_comm);

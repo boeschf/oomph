@@ -26,6 +26,11 @@ if (OOMPH_WITH_UCX)
         target_compile_definitions(oomph_ucx PRIVATE OOMPH_UCX_USE_SPIN_LOCK)
     endif()
 
+    set(OOMPH_UCX_USE_MULTIPLE_ENDPOINTS ON CACHE BOOL "use one shared recv endpoint, and one send endpoint per thread")
+    if (OOMPH_UCX_USE_MULTIPLE_ENDPOINTS)
+        target_compile_definitions(oomph_ucx PRIVATE OOMPH_UCX_USE_MULTIPLE_ENDPOINTS)
+    endif()
+
     install(TARGETS oomph_ucx
         EXPORT oomph-targets
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
