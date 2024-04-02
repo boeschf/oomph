@@ -9,17 +9,17 @@
  */
 #pragma once
 
-#include <utility>
-#include <cstring>
-#include <cstdint>
 #include <array>
+#include <cstdint>
+#include <cstring>
+#include <ostream>
+#include <utility>
 //
 #include <rdma/fabric.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 //
-#include "libfabric_defines.hpp"
-#include "print.hpp"
+#include "oomph_libfabric_defines.hpp"
 
 // Different providers use different address formats that we must accommodate
 // in our locality object.
@@ -31,6 +31,10 @@
 #define HAVE_LIBFABRIC_LOCALITY_SIZE 4
 #endif
 
+#ifdef HAVE_LIBFABRIC_EFA
+#define HAVE_LIBFABRIC_LOCALITY_SIZE 32
+#endif
+
 #if defined(HAVE_LIBFABRIC_VERBS) || defined(HAVE_LIBFABRIC_TCP) ||                                \
     defined(HAVE_LIBFABRIC_SOCKETS) || defined(HAVE_LIBFABRIC_PSM2)
 #define HAVE_LIBFABRIC_LOCALITY_SIZE 16
@@ -40,7 +44,7 @@
 namespace oomph
 {
 // cppcheck-suppress ConfigurationNotChecked
-static NS_DEBUG::enable_print<false> loc_deb("LOCALIT");
+static NS_DEBUG::enable_print<true> loc_deb("LOCALIT");
 } // namespace oomph
 
 namespace oomph
@@ -86,41 +90,41 @@ struct locality
     {
         std::memcpy(&data_[0], &in_data[0], locality_defs::array_size);
         fi_address_ = 0;
-        OOMPH_DP_ONLY(loc_deb, trace(NS_DEBUG::str<>("expl constructing"), iplocality((*this))));
+        LF_DEB(loc_deb, trace(NS_DEBUG::str<>("expl constructing"), iplocality((*this))));
     }
 
     locality()
     {
         std::memset(&data_[0], 0x00, locality_defs::array_size);
         fi_address_ = 0;
-        OOMPH_DP_ONLY(loc_deb, trace(NS_DEBUG::str<>("default construct"), iplocality((*this))));
+        LF_DEB(loc_deb, trace(NS_DEBUG::str<>("default construct"), iplocality((*this))));
     }
 
     locality(const locality& other)
     : data_(other.data_)
     , fi_address_(other.fi_address_)
     {
-        OOMPH_DP_ONLY(loc_deb, trace(NS_DEBUG::str<>("copy construct"), iplocality((*this))));
+        LF_DEB(loc_deb, trace(NS_DEBUG::str<>("copy construct"), iplocality((*this))));
     }
 
     locality(const locality& other, fi_addr_t addr)
     : data_(other.data_)
     , fi_address_(addr)
     {
-        OOMPH_DP_ONLY(loc_deb, trace(NS_DEBUG::str<>("copy fi construct"), iplocality((*this))));
+        LF_DEB(loc_deb, trace(NS_DEBUG::str<>("copy fi construct"), iplocality((*this))));
     }
 
     locality(locality&& other)
     : data_(std::move(other.data_))
     , fi_address_(other.fi_address_)
     {
-        OOMPH_DP_ONLY(loc_deb, trace(NS_DEBUG::str<>("move construct"), iplocality((*this))));
+        LF_DEB(loc_deb, trace(NS_DEBUG::str<>("move construct"), iplocality((*this))));
     }
 
     // provided to support sockets mode bootstrap
     explicit locality(const std::string& address, const std::string& portnum)
     {
-        OOMPH_DP_ONLY(loc_deb, trace(NS_DEBUG::str<>("explicit construct"), address, ":", portnum));
+        LF_DEB(loc_deb, trace(NS_DEBUG::str<>("explicit construct"), address, ":", portnum));
         //
         struct sockaddr_in socket_data;
         memset(&socket_data, 0, sizeof(socket_data));
@@ -130,19 +134,19 @@ struct locality
         //
         std::memcpy(&data_[0], &socket_data, locality_defs::array_size);
         fi_address_ = 0;
-        OOMPH_DP_ONLY(loc_deb, trace(NS_DEBUG::str<>("string constructing"), iplocality((*this))));
+        LF_DEB(loc_deb, trace(NS_DEBUG::str<>("string constructing"), iplocality((*this))));
     }
 
     // some condition marking this locality as valid
     explicit inline operator bool() const
     {
-        OOMPH_DP_ONLY(loc_deb, trace(NS_DEBUG::str<>("bool operator"), iplocality((*this))));
+        LF_DEB(loc_deb, trace(NS_DEBUG::str<>("bool operator"), iplocality((*this))));
         return (ip_address() != 0);
     }
 
     inline bool valid() const
     {
-        OOMPH_DP_ONLY(loc_deb, trace(NS_DEBUG::str<>("valid operator"), iplocality((*this))));
+        LF_DEB(loc_deb, trace(NS_DEBUG::str<>("valid operator"), iplocality((*this))));
         return (ip_address() != 0);
     }
 
@@ -150,21 +154,21 @@ struct locality
     {
         data_ = other.data_;
         fi_address_ = other.fi_address_;
-        OOMPH_DP_ONLY(loc_deb,
+        LF_DEB(loc_deb,
             trace(NS_DEBUG::str<>("copy operator"), iplocality(*this), iplocality(other)));
         return *this;
     }
 
     bool operator==(const locality& other)
     {
-        OOMPH_DP_ONLY(loc_deb,
+        LF_DEB(loc_deb,
             trace(NS_DEBUG::str<>("equality operator"), iplocality(*this), iplocality(other)));
         return std::memcmp(&data_, &other.data_, locality_defs::array_size) == 0;
     }
 
     bool less_than(const locality& other)
     {
-        OOMPH_DP_ONLY(loc_deb,
+        LF_DEB(loc_deb,
             trace(NS_DEBUG::str<>("less operator"), iplocality(*this), iplocality(other)));
         if (ip_address() < other.ip_address()) return true;
         if (ip_address() == other.ip_address()) return port() < other.port();
@@ -179,6 +183,8 @@ struct locality
         return data_[0];
 #elif defined(HAVE_LIBFABRIC_CXI)
         return data_[0];
+#elif defined(HAVE_LIBFABRIC_EFA)
+        return data_[0];
 #else
         throw fabric_error(0, "unsupported fabric provider, please fix ASAP");
 #endif
@@ -191,6 +197,8 @@ struct locality
 #elif defined(HAVE_LIBFABRIC_GNI)
         return data[0];
 #elif defined(HAVE_LIBFABRIC_CXI)
+        return data[0];
+#elif defined(HAVE_LIBFABRIC_EFA)
         return data[0];
 #else
         throw fabric_error(0, "unsupported fabric provider, please fix ASAP");
@@ -215,7 +223,7 @@ struct locality
   private:
     friend bool operator==(locality const& lhs, locality const& rhs)
     {
-        OOMPH_DP_ONLY(loc_deb,
+        LF_DEB(loc_deb,
             trace(NS_DEBUG::str<>("equality friend"), iplocality(lhs), iplocality(rhs)));
         return ((lhs.data_ == rhs.data_) && (lhs.fi_address_ == rhs.fi_address_));
     }
@@ -226,8 +234,7 @@ struct locality
         const uint32_t&  a2 = rhs.ip_address();
         const fi_addr_t& f1 = lhs.fi_address();
         const fi_addr_t& f2 = rhs.fi_address();
-        OOMPH_DP_ONLY(loc_deb,
-            trace(NS_DEBUG::str<>("less friend"), iplocality(lhs), iplocality(rhs)));
+        LF_DEB(loc_deb, trace(NS_DEBUG::str<>("less friend"), iplocality(lhs), iplocality(rhs)));
         return (a1 < a2) || (a1 == a2 && f1 < f2);
     }
 

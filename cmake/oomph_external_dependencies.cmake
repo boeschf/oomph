@@ -1,8 +1,9 @@
 include(oomph_git_submodule)
 include(oomph_external_project)
+include(ExternalProject)
 
 if(OOMPH_GIT_SUBMODULE)
-    update_git_submodules()
+#    update_git_submodules()
 endif()
 
 # ---------------------------------------------------------------------
@@ -15,48 +16,40 @@ find_package(MPI REQUIRED COMPONENTS CXX)
 # ---------------------------------------------------------------------
 find_package(Boost REQUIRED)
 
-# ---------------------------------------------------------------------
-# hwmalloc setup
-# ---------------------------------------------------------------------
-cmake_dependent_option(OOMPH_USE_BUNDLED_HWMALLOC "Use bundled hwmalloc lib." ON
-    "OOMPH_USE_BUNDLED_LIBS" OFF)
-if(OOMPH_USE_BUNDLED_HWMALLOC)
-    check_git_submodule(hwmalloc ext/hwmalloc)
-    add_subdirectory(ext/hwmalloc)
-    add_library(HWMALLOC::hwmalloc ALIAS hwmalloc)
-else()
-    find_package(HWMALLOC REQUIRED)
-endif()
+#------------------------------------------------------------------------------
+# Find Threads
+#------------------------------------------------------------------------------
+find_package(Threads REQUIRED)
+
+# ------------------------------------------------------------------------------
+# Build/Download HWMalloc
+# ------------------------------------------------------------------------------
+get_external_project(
+  PROJECT_NAME
+  "hwmalloc"
+  FOLDER_NAME
+  "hwmalloc"
+  GIT_REPO
+  "https://github.com/ghex-org/hwmalloc.git"
+  GIT_TAG
+  "master"
+)
+
+add_library(HWMALLOC::hwmalloc ALIAS hwmalloc)
 
 # ---------------------------------------------------------------------
 # google test setup
 # ---------------------------------------------------------------------
-cmake_dependent_option(OOMPH_USE_BUNDLED_GTEST "Use bundled googletest lib." ON
-    "OOMPH_USE_BUNDLED_LIBS" OFF)
-if (OOMPH_WITH_TESTING)
-    if(OOMPH_USE_BUNDLED_GTEST)
-        add_external_cmake_project(
-            NAME googletest
-            PATH ext/googletest
-            INTERFACE_NAME ext-gtest
-            LIBS libgtest.a libgtest_main.a
-            CMAKE_ARGS
-                "-DCMAKE_BUILD_TYPE=release"
-                "-DBUILD_SHARED_LIBS=OFF"
-                "-DBUILD_GMOCK=OFF")
-        # on some systems we need link explicitly against threads
-        if (TARGET ext-gtest)
-            find_package (Threads)
-            target_link_libraries(ext-gtest INTERFACE Threads::Threads)
-        endif()
-    else()
-        # Use system provided google test
-        find_package(GTest REQUIRED)
-        add_library(ext-gtest INTERFACE)
-        if (${CMAKE_VERSION} VERSION_LESS "3.20.0")
-            target_link_libraries(ext-gtest INTERFACE GTest::GTest GTest::Main)
-        else()
-            target_link_libraries(ext-gtest INTERFACE GTest::gtest GTest::gtest_main)
-        endif()
-    endif()
+find_package(GTest QUIET)
+message("GTest FOUND ${GTest_FOUND}")
+if (NOT GTest_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+      googletest
+      GIT_REPOSITORY https://github.com/google/googletest.git
+      GIT_TAG main
+      GIT_SHALLOW TRUE)
+    # For Windows: Prevent overriding the parent project's compiler/linker settings
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
 endif()

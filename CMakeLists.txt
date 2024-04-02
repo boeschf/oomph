@@ -34,6 +34,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(OOMPH_GIT_SUBMODULE "Check submodules during build" ON)
 option(OOMPH_USE_BUNDLED_LIBS "Use bundled 3rd party libraries" OFF)
 include(oomph_external_dependencies)
+include(ExternalProject)
 
 # ---------------------------------------------------------------------
 # Define main oomph library
@@ -94,6 +95,8 @@ add_subdirectory(bindings)
 # ---------------------------------------------------------------------
 set(OOMPH_WITH_TESTING OFF CACHE BOOL "True if tests shall be built")
 if (OOMPH_WITH_TESTING)
+    set(CTEST_TEST_TIMEOUT 30)
+    include(CTest)
     enable_testing()
     add_subdirectory(test)
 endif()

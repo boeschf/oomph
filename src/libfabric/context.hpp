@@ -26,14 +26,16 @@
 namespace oomph
 {
 
-using controller_type = oomph::libfabric::controller;
+static NS_DEBUG::enable_print<true> ctx_deb("CONTEXT");
+
+using controller_type = libfabric::controller;
 
 class context_impl : public context_base
 {
   public:
-    using region_type = oomph::libfabric::memory_segment;
+    using region_type = libfabric::memory_segment;
     using domain_type = region_type::provider_domain;
-    using device_region_type = oomph::libfabric::memory_segment;
+    using device_region_type = libfabric::memory_segment;
     using heap_type = hwmalloc::heap<context_impl>;
     using callback_queue = boost::lockfree::queue<detail::shared_request_state*,
         boost::lockfree::fixed_sized<false>, boost::lockfree::allocator<std::allocator<void>>>;
@@ -42,6 +44,7 @@ class context_impl : public context_base
     heap_type                        m_heap;
     domain_type*                     m_domain;
     std::shared_ptr<controller_type> m_controller;
+    std::uintptr_t                   m_ctxt_tag;
 
   public:
     // --------------------------------------------------
@@ -61,21 +64,22 @@ class context_impl : public context_base
     context_impl(context_impl const&) = delete;
     context_impl(context_impl&&) = delete;
 
-    region_type make_region(void* const ptr, std::size_t size, bool /*device*/)
+    region_type make_region(void* const ptr, std::size_t size, int device_id)
     {
-        bool bind_mr = ((m_controller->memory_registration_mode_flags() & FI_MR_ENDPOINT) != 0);
-        if (bind_mr) {
-            void *endpoint = m_controller->get_rx_endpoint().get_ep();
-            return oomph::libfabric::memory_segment(m_domain, ptr, size, bind_mr, endpoint);
+        if (m_controller->get_mrbind())
+        {
+            void* endpoint = m_controller->get_rx_endpoint().get_ep();
+            return libfabric::memory_segment(m_domain, ptr, size, true, endpoint, device_id);
         }
-        else {
-            return oomph::libfabric::memory_segment(m_domain, ptr, size, false, nullptr);
-        }
+        else { return libfabric::memory_segment(m_domain, ptr, size, false, nullptr, device_id); }
     }
 
     auto& get_heap() noexcept { return m_heap; }
 
     communicator_impl* get_communicator();
+
+    // we must modify all tags to use 32bits of context ptr for uniqueness
+    inline std::uintptr_t get_context_tag() { return m_ctxt_tag; }
 
     inline controller_type* get_controller() /*const */ { return m_controller.get(); }
     const char*             get_transport_option(const std::string& opt);
@@ -107,9 +111,8 @@ class context_impl : public context_base
                 {
                     // our recv was cancelled correctly
                     found = true;
-                    OOMPH_DP_ONLY(libfabric::ctx_deb,
-                        debug(NS_DEBUG::str<>("Cancel shared"), "succeeded", "op_ctx",
-                            NS_DEBUG::ptr(op_ctx)));
+                    LF_DEB(oomph::ctx_deb, debug(NS_DEBUG::str<>("Cancel shared"), "succeeded",
+                                               "op_ctx", NS_DEBUG::ptr(op_ctx)));
                     auto ptr = s->release_self_ref();
                     s->set_canceled();
                 }
@@ -138,15 +141,15 @@ template<>
 inline oomph::libfabric::memory_segment
 register_memory<oomph::context_impl>(oomph::context_impl& c, void* const ptr, std::size_t size)
 {
-    return c.make_region(ptr, size, false);
+    return c.make_region(ptr, size, -2);
 }
 
 #if OOMPH_ENABLE_DEVICE
 template<>
 inline oomph::libfabric::memory_segment
-register_device_memory<context_impl>(context_impl& c, void* ptr, std::size_t size)
+register_device_memory<context_impl>(context_impl& c, int device_id, void* ptr, std::size_t size)
 {
-    return c.make_region(ptr, size, true);
+    return c.make_region(ptr, size, device_id);
 }
 #endif
 

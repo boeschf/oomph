@@ -2,6 +2,11 @@ add_subdirectory(mpi_runner)
 
 set(OOMPH_TEST_LEAK_GPU_MEMORY OFF CACHE BOOL "Do not free memory (bug on Piz Daint)")
 
+#------------------------------------------------------------------------------
+# Find Threads
+#------------------------------------------------------------------------------
+find_package(Threads REQUIRED)
+
 # ---------------------------------------------------------------------
 # compile tests
 # ---------------------------------------------------------------------
@@ -10,7 +15,7 @@ set(OOMPH_TEST_LEAK_GPU_MEMORY OFF CACHE BOOL "Do not free memory (bug on Piz Da
 set(serial_tests test_unique_function test_unsafe_shared_ptr)
 
 # list of parallel tests to be executed
-set(parallel_tests test_context test_send_recv test_send_multi test_cancel test_locality)
+set(parallel_tests test_context test_send_recv test_send_multi test_cancel test_locality test_mem_reg)
 #test_tag_range)
 if (OOMPH_ENABLE_BARRIER)
     list(APPEND parallel_tests test_barrier)
@@ -24,7 +29,7 @@ function(compile_test t_)
     if (OOMPH_TEST_LEAK_GPU_MEMORY)
         target_compile_definitions(${t} PRIVATE OOMPH_TEST_LEAK_GPU_MEMORY)
     endif()
-    target_link_libraries(${t} PRIVATE ext-gtest)
+    target_link_libraries(${t} PRIVATE ${GTEST_LIBRARIES})
     target_link_libraries(${t} PUBLIC oomph)
 endfunction()
 
@@ -43,7 +48,7 @@ endforeach()
 function(reg_serial_test t)
     add_executable(${t} $<TARGET_OBJECTS:${t}_obj>)
     oomph_target_compile_options(${t})
-    target_link_libraries(${t} PRIVATE ext-gtest)
+    target_link_libraries(${t} PRIVATE GTest::gtest)
     target_link_libraries(${t} PRIVATE oomph_common)
     add_test(
         NAME ${t}
@@ -59,7 +64,7 @@ function(reg_parallel_test t_ lib n)
     set(t ${t_}_${lib})
     add_executable(${t} $<TARGET_OBJECTS:${t_}_obj>)
     oomph_target_compile_options(${t})
-    target_link_libraries(${t} PRIVATE gtest_main_mpi)
+    target_link_libraries(${t} PRIVATE gtest_main_mpi Threads::Threads)
     target_link_libraries(${t} PRIVATE oomph_${lib})
     add_test(
         NAME ${t}
@@ -70,19 +75,19 @@ endfunction()
 
 if (OOMPH_WITH_MPI)
     foreach(t ${parallel_tests})
-        reg_parallel_test(${t} mpi 4)
+        reg_parallel_test(${t} mpi 2)
     endforeach()
 endif()
 
 if (OOMPH_WITH_UCX)
     foreach(t ${parallel_tests})
-        reg_parallel_test(${t} ucx 4)
+        reg_parallel_test(${t} ucx 2)
     endforeach()
 endif()
 
 if (OOMPH_WITH_LIBFABRIC)
     foreach(t ${parallel_tests})
-        reg_parallel_test(${t} libfabric 4)
+        reg_parallel_test(${t} libfabric 2)
     endforeach()
 endif()
 

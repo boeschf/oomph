@@ -13,16 +13,13 @@
 //
 #include <oomph/request.hpp>
 //
-#include <print.hpp>
-#include <operation_context_base.hpp>
+#include "operation_context_base.hpp"
 //
-namespace oomph
-{
-namespace libfabric
+namespace oomph::libfabric
 {
 
 // cppcheck-suppress ConfigurationNotChecked
-static NS_DEBUG::enable_print<false> ctx_deb("CONTEXT");
+static NS_DEBUG::enable_print<true> opctx_deb("OP__CXT");
 
 // This struct holds the ready state of a future
 // we must also store the context used in libfabric, in case
@@ -37,7 +34,7 @@ struct operation_context : public operation_context_base<operation_context>
     , m_req{req}
     {
         [[maybe_unused]] auto scp =
-            ctx_deb.scope(NS_DEBUG::ptr(this), __func__, NS_DEBUG::ptr(req));
+            opctx_deb.scope(NS_DEBUG::ptr(this), __func__, "request", req);
     }
 
     // --------------------------------------------------------------------
@@ -53,5 +50,4 @@ struct operation_context : public operation_context_base<operation_context>
     int handle_tagged_send_completion_impl(void* user_data);
 };
 
-} // namespace libfabric
-} // namespace oomph
+} // namespace oomph::libfabric

@@ -10,14 +10,14 @@
 #pragma once
 
 #include <rdma/fi_eq.h>
-#include "libfabric_defines.hpp"
-
-#define NS_LIBFABRIC oomph::libfabric
+#include "oomph_libfabric_defines.hpp"
 
 namespace NS_LIBFABRIC
 {
 
 class controller;
+
+static NS_DEBUG::enable_print<true> ctx_bas("CTXBASE");
 
 enum operation_context_type : int32_t
 {
@@ -45,6 +45,7 @@ struct operation_context_base
     : context_reserved_space()
     , type_{ctype}
     {
+        [[maybe_unused]] auto scp = ctx_bas.scope(NS_DEBUG::ptr(this), __func__);
     }
 
     // type is needed to smiplify the dispatch of errors
@@ -72,21 +73,14 @@ struct operation_context_base
     {
         return static_cast<Derived*>(this)->handle_tagged_send_completion_impl(user_data);
     }
-    int handle_tagged_send_completion_impl() { return 0; }
+    int handle_tagged_send_completion_impl(void* /*user_data*/) { return 0; }
 
     // recv
-    int handle_recv_completion(std::uint64_t len, bool threadlocal)
+    int handle_recv_completion(std::uint64_t len)
     {
-        return static_cast<Derived*>(this)->handle_recv_completion_impl(len, threadlocal);
+        return static_cast<Derived*>(this)->handle_recv_completion_impl(len);
     }
-    int handle_recv_completion_impl(std::uint64_t /*len*/, bool /*threadlocal*/) { return 0; }
-
-    // recv + with source adddress (used with FI_SOURCE)
-    int handle_recv_src_completion(fi_addr_t const src_addr, std::uint64_t len)
-    {
-        return static_cast<Derived*>(this)->handle_recv_src_completion_impl(src_addr, len);
-    }
-    int handle_recv_src_completion_impl(fi_addr_t const src_addr, std::uint64_t len) { return 0; }
+    int handle_recv_completion_impl(std::uint64_t /*len*/) { return 0; }
 
     // tagged recv
     int handle_tagged_recv_completion(void* user_data)

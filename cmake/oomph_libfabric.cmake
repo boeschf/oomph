@@ -76,7 +76,7 @@ if (OOMPH_WITH_LIBFABRIC)
         file(WRITE ${TEMP_FILENAME}
             ${PREAMBLE}
             ${oomph_config_defines}
-            "\n#endif\n"
+            "#endif\n"
         )
         configure_file("${TEMP_FILENAME}" "${OPTION_FILENAME}" COPYONLY)
         file(REMOVE "${TEMP_FILENAME}")
@@ -93,8 +93,9 @@ if (OOMPH_WITH_LIBFABRIC)
     # Hardware device selection
     #------------------------------------------------------------------------------
     set(OOMPH_LIBFABRIC_PROVIDER "tcp" CACHE
-        STRING "The provider (cxi/gni/psm2/sockets/tcp/verbs)")
-    set_property(CACHE OOMPH_LIBFABRIC_PROVIDER PROPERTY STRINGS "cxi" "gni" "psm2" "sockets" "tcp" "verbs")
+        STRING "The provider (cxi(Cray Slingshot)/efa(Amazon Elastic)/gni(Cray Gemini)/psm2(Intel Omni-Path)/tcp/verbs(Infiniband))")
+    set_property(CACHE OOMPH_LIBFABRIC_PROVIDER PROPERTY STRINGS
+        "cxi" "efa" "gni" "psm2" "tcp" "verbs")
 
     oomph_libfabric_add_config_define_namespace(
         DEFINE HAVE_LIBFABRIC_PROVIDER
@@ -115,11 +116,17 @@ if (OOMPH_WITH_LIBFABRIC)
         oomph_libfabric_add_config_define_namespace(
             DEFINE HAVE_LIBFABRIC_CXI
             NAMESPACE libfabric)
+    elseif(OOMPH_LIBFABRIC_PROVIDER MATCHES "efa")
+        oomph_libfabric_add_config_define_namespace(
+            DEFINE HAVE_LIBFABRIC_EFA
+            NAMESPACE libfabric)
     elseif(OOMPH_LIBFABRIC_PROVIDER MATCHES "tcp")
         oomph_libfabric_add_config_define_namespace(
             DEFINE HAVE_LIBFABRIC_TCP
             NAMESPACE libfabric)
     elseif(OOMPH_LIBFABRIC_PROVIDER MATCHES "sockets")
+        message(WARNING "The Sockets provider is deprecated in favor of the tcp, udp, "
+            "and utility providers")
         oomph_libfabric_add_config_define_namespace(
             DEFINE HAVE_LIBFABRIC_SOCKETS
             NAMESPACE libfabric)
@@ -134,7 +141,6 @@ if (OOMPH_WITH_LIBFABRIC)
     #------------------------------------------------------------------------------
     set(OOMPH_LIBFABRIC_WITH_PERFORMANCE_COUNTERS OFF BOOL
         STRING "Enable libfabric parcelport performance counters (default: OFF)")
-    set_property(CACHE OOMPH_LIBFABRIC_PROVIDER PROPERTY STRINGS "tcp" "sockets" "psm2" "verbs" "gni")
     mark_as_advanced(OOMPH_LIBFABRIC_WITH_PERFORMANCE_COUNTERS)
 
     if (OOMPH_LIBFABRIC_WITH_PERFORMANCE_COUNTERS)
@@ -144,13 +150,19 @@ if (OOMPH_WITH_LIBFABRIC)
     endif()
 
     #------------------------------------------------------------------------------
+    # used by template expansion for location of print.hpp
+    #------------------------------------------------------------------------------
+    set(OOMPH_SRC_LIBFABRIC_DIR "${PROJECT_SOURCE_DIR}/src/libfabric")
+
+    #------------------------------------------------------------------------------
     # Write options to file in build dir
     #------------------------------------------------------------------------------
     oomph_libfabric_write_config_defines_file(
         NAMESPACE libfabric
-        FILENAME  "${PROJECT_BINARY_DIR}/oomph_libfabric_defines.hpp"
+        FILENAME  "${PROJECT_BINARY_DIR}/src/libfabric/oomph_libfabric_defines.hpp"
+        TEMPLATE  "${OOMPH_SRC_LIBFABRIC_DIR}/libfabric_defines_template.hpp"
     )
-    target_include_directories(oomph_libfabric PRIVATE "${PROJECT_BINARY_DIR}")
+    target_include_directories(oomph_libfabric PRIVATE "${PROJECT_BINARY_DIR}/src/libfabric")
 endif()
 
 

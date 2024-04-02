@@ -7,6 +7,8 @@
  * Please, refer to the LICENSE file in the root directory.
  * SPDX-License-Identifier: BSD-3-Clause
  */
+#include <cstdint>
+//
 #include <boost/thread.hpp>
 // paths relative to backend
 #include <oomph_libfabric_defines.hpp>
@@ -17,9 +19,9 @@
 namespace oomph
 {
 // cppcheck-suppress ConfigurationNotChecked
-static NS_DEBUG::enable_print<false> src_deb("__SRC__");
+static NS_DEBUG::enable_print<true> src_deb("__SRC__");
 
-using controller_type = oomph::libfabric::controller;
+using controller_type = libfabric::controller;
 
 context_impl::context_impl(MPI_Comm comm, bool thread_safe, bool message_pool_never_free,
     std::size_t message_pool_reserve)
@@ -31,6 +33,12 @@ context_impl::context_impl(MPI_Comm comm, bool thread_safe, bool message_pool_ne
     int rank, size;
     OOMPH_CHECK_MPI_RESULT(MPI_Comm_rank(comm, &rank));
     OOMPH_CHECK_MPI_RESULT(MPI_Comm_size(comm, &size));
+
+    m_ctxt_tag = reinterpret_cast<std::uintptr_t>(this);
+    OOMPH_CHECK_MPI_RESULT(MPI_Bcast(&m_ctxt_tag, 1, MPI_UINT64_T, 0, comm));
+    LF_DEB(src_deb, debug(NS_DEBUG::str<>("Broadcast"), "rank", debug::dec<3>(rank), "context",
+                        debug::ptr(m_ctxt_tag)));
+
     // TODO fix the thread safety
     // problem: controller is a singleton and has problems when 2 contexts are created in the
     // following order: single threaded first, then multi-threaded after
@@ -75,8 +83,8 @@ context_impl::init_libfabric_controller(oomph::context_impl* /*ctx*/, MPI_Comm c
     static std::shared_ptr<controller_type> instance(nullptr);
     if (!instance.get())
     {
-        OOMPH_DP_ONLY(src_deb, debug(NS_DEBUG::str<>("New Controller"), "rank", debug::dec<3>(rank),
-                                   "size", debug::dec<3>(size), "threads", debug::dec<3>(threads)));
+        LF_DEB(src_deb, debug(NS_DEBUG::str<>("New Controller"), "rank", debug::dec<3>(rank),
+                            "size", debug::dec<3>(size), "threads", debug::dec<3>(threads)));
         instance.reset(new controller_type());
         instance->initialize(HAVE_LIBFABRIC_PROVIDER, rank == 0, size, threads, comm);
     }

@@ -18,31 +18,40 @@
 #include <memory>
 #include <utility>
 
+#include "oomph_libfabric_defines.hpp"
 #include "fabric_error.hpp"
 
-// ------------------------------------------------------------------
-// This section exists to make interoperabily/sharing of code
-// between OOMPH/GHEX and HPX easier
-#if __has_include("./print.hpp")
-#include "print.hpp"
-#define DEBUG     OOMPH_DP_ONLY
-#define has_debug 1
-#elif __has_include(<hpx/debugging/print.hpp>)
-#include <hpx/debugging/print.hpp>
-#include <hpx/rma/rma_fwd.hpp>
-#define DEBUG(printer, Expr) HPX_DP_ONLY(printer, Expr)
-#define has_debug 1
-#else
-#define DEBUG(printer, Expr)
+#ifdef OOMPH_ENABLE_DEVICE
+#include <hwmalloc/device.hpp>
 #endif
 // ------------------------------------------------------------------
-
-#define NS_MEMORY oomph::libfabric
 
 namespace NS_MEMORY
 {
 
-static NS_DEBUG::enable_print<false> mrn_deb("REGION_");
+static NS_DEBUG::enable_print<true> mrn_deb("REGION_");
+
+/*
+struct fi_mr_attr {
+    const struct iovec *mr_iov;
+    size_t              iov_count;
+    uint64_t            access;
+    uint64_t            offset;
+    uint64_t            requested_key;
+    void               *context;
+    size_t              auth_key_size;
+    uint8_t            *auth_key;
+    enum fi_hmem_iface  iface;
+    union {
+        uint64_t        reserved;
+        int             cuda;
+        int             ze;
+        int             neuron;
+        int             synapseai;
+    } device;
+    void               *hmem_data;
+};
+*/
 
 // This is the only part of the code that actually
 // calls libfabric functions
@@ -53,30 +62,56 @@ struct region_provider
     using provider_domain = struct fid_domain;
 
     // register region
-    template<typename... Args>
-    static inline int register_memory(Args&&... args)
+    static inline int fi_register_memory(provider_domain* pd, int device_id, const void* buf,
+        size_t len, uint64_t access_flags, uint64_t offset, uint64_t request_key, struct fid_mr** mr)
     {
-        return fi_mr_reg(std::forward<Args>(args)...);
-    }
-
-    // register region
-    template<typename... Args>
-    static inline int register_memory_attr(Args&&... args)
-    {
-        [[maybe_unused]] auto scp = NS_MEMORY::mrn_deb.scope(__func__, std::forward<Args>(args)...);
-        //        int x = FI_HMEM_ROCR;
-        //        fi_mr_regattr(struct fid_domain *domain, const struct fi_mr_attr *attr,
-        //                    uint64_t flags, struct fid_mr **mr)
-        return fi_mr_regattr(std::forward<Args>(args)...);
+        [[maybe_unused]] auto scp = NS_MEMORY::mrn_deb.scope(__func__, NS_DEBUG::ptr(buf), NS_DEBUG::dec<>(len), device_id);
+        //
+        struct iovec addresses = {/*.iov_base = */const_cast<void*>(buf), /*.iov_len = */len};
+        fi_mr_attr attr = {
+            /*.mr_iov         = */&addresses,
+            /*.iov_count      = */1,
+            /*.access         = */access_flags,
+            /*.offset         = */offset,
+            /*.requested_key  = */request_key,
+            /*.context        = */nullptr,
+            /*.auth_key_size  = */0,
+            /*.auth_key       = */nullptr,
+            /*.iface          = */FI_HMEM_SYSTEM,
+            /*.device         = */{0},
+#if (FI_MAJOR_VERSION == 1) && (FI_MINOR_VERSION < 17)
+        };
+#else
+            /*.hmem_data      = */nullptr};
+#endif
+        if (device_id >= 0)
+        {
+#ifdef OOMPH_ENABLE_DEVICE
+            attr.device.cuda = device_id;
+            int handle = hwmalloc::get_device_id();
+            attr.device.cuda = handle;
+#if defined(OOMPH_DEVICE_CUDA)
+            attr.iface = FI_HMEM_CUDA;
+            LF_DEB(NS_MEMORY::mrn_deb, trace(NS_DEBUG::str<>("CUDA"), "set device id", device_id, handle));
+#elif defined(OOMPH_DEVICE_HIP)
+            attr.iface = FI_HMEM_ROCR;
+            LF_DEB(NS_MEMORY::mrn_deb, trace(NS_DEBUG::str<>("HIP"), "set device id", device_id, handle));
+#endif
+#endif
+        }
+        uint64_t flags = 0;
+        int ret = fi_mr_regattr(pd, &attr, flags, mr);
+        if (ret) { throw NS_LIBFABRIC::fabric_error(int(ret), "register_memory"); }
+        return ret;
     }
 
     // unregister region
     static inline int unregister_memory(provider_region* region) { return fi_close(&region->fid); }
 
     // Default registration flags for this provider
-    static inline constexpr int flags()
+    static inline constexpr int access_flags()
     {
-        return FI_READ | FI_WRITE | FI_RECV | FI_SEND | FI_REMOTE_READ | FI_REMOTE_WRITE;
+        return FI_READ | FI_WRITE | FI_RECV | FI_SEND /*| FI_REMOTE_READ | FI_REMOTE_WRITE*/;
     }
 
     // Get the local descriptor of the memory region.
@@ -116,7 +151,7 @@ struct memory_handle
     , size_{uint32_t(size)}
     , used_space_{0}
     {
-        //            DEBUG(NS_MEMORY::mrn_deb,
+        //            LF_DEB(NS_MEMORY::mrn_deb,
         //                trace(NS_DEBUG::str<>("memory_handle"), *this));
     }
 
@@ -181,16 +216,16 @@ struct memory_handle
     {
         if (region_ /*&& !get_user_region()*/)
         {
-            DEBUG(NS_MEMORY::mrn_deb, trace(NS_DEBUG::str<>("release"), region_));
+            LF_DEB(NS_MEMORY::mrn_deb, trace(NS_DEBUG::str<>("release"), region_));
             //
             if (region_provider::unregister_memory(region_))
             {
-                DEBUG(NS_MEMORY::mrn_deb, error("fi_close mr failed"));
+                LF_DEB(NS_MEMORY::mrn_deb, error("fi_close mr failed"));
                 return -1;
             }
             else
             {
-                DEBUG(NS_MEMORY::mrn_deb, trace(NS_DEBUG::str<>("de-Registered region"), *this));
+                LF_DEB(NS_MEMORY::mrn_deb, trace(NS_DEBUG::str<>("de-Registered region"), *this));
             }
             region_ = nullptr;
         }
@@ -201,16 +236,16 @@ struct memory_handle
     friend std::ostream& operator<<(std::ostream& os, memory_handle const& region)
     {
         (void)region;
-#if has_debug
-        // clang-format off
-            os /*<< "region "*/      << NS_DEBUG::ptr(&region)
-               //<< " fi_region "  << NS_DEBUG::ptr(region.region_)
-           << " address "    << NS_DEBUG::ptr(region.address_)
-           << " size "       << NS_DEBUG::hex<6>(region.size_)
-               //<< " used_space " << NS_DEBUG::hex<6>(region.used_space_/*size_*/)
-               << " loc key "  << NS_DEBUG::ptr(region.region_ ? region_provider::get_local_key(region.region_) : nullptr)
-               << " rem key " << NS_DEBUG::ptr(region.region_ ? region_provider::get_remote_key(region.region_) : 0);
-        // clang-format on
+#if 1 || has_debug
+            os << "region "      << NS_DEBUG::ptr(&region)
+            //<< " fi_region "  << NS_DEBUG::ptr(region.region_)
+            << " address "    << NS_DEBUG::ptr(region.address_)
+            << " size "       << NS_DEBUG::hex<6>(region.size_)
+            //<< " used_space " << NS_DEBUG::hex<6>(region.used_space_/*size_*/)
+            << " loc key "  << NS_DEBUG::ptr(region.region_ ? region_provider::get_local_key(region.region_) : nullptr)
+            << " rem key " << NS_DEBUG::ptr(region.region_ ? region_provider::get_remote_key(region.region_) : 0);
+        ///// clang-format off
+        ///// clang-format on
 #endif
         return os;
     }
@@ -274,7 +309,8 @@ struct memory_segment : public memory_handle
     // we do not cache local/remote keys here because memory segments are only
     // used by the heap to store chunks and the user will always receive
     // a memory_handle - which does have keys cached
-    memory_segment(provider_domain* pd, const void* buffer, const uint64_t length, bool bind_mr, void *ep)
+    memory_segment(provider_domain* pd, const void* buffer, const uint64_t length, bool bind_mr,
+        void* ep, int device_id)
     {
         // an rma key counter to keep some providers (CXI) happy
         static std::atomic<std::uint64_t> key = 0;
@@ -285,22 +321,25 @@ struct memory_segment : public memory_handle
         region_ = nullptr;
         //
         base_addr_ = memory_handle::address_;
-        DEBUG(NS_MEMORY::mrn_deb, trace(NS_DEBUG::str<>("memory_segment"), *this));
+        LF_DEB(NS_MEMORY::mrn_deb, trace(NS_DEBUG::str<>("memory_segment"), *this, device_id));
 
-        int ret = region_provider::register_memory(pd, const_cast<void*>(buffer), length,
-            region_provider::flags(), 0, key++, 0, &(region_), nullptr);
-        if (ret) { throw libfabric::fabric_error(int(ret), "register_memory"); }
-        else { DEBUG(NS_MEMORY::mrn_deb, trace(NS_DEBUG::str<>("Registered region"), *this)); }
+        int ret = region_provider::fi_register_memory(pd, device_id, buffer, length,
+            region_provider::access_flags(), 0, key++, &(region_));
+        if (!ret)
+        {
+            LF_DEB(NS_MEMORY::mrn_deb,
+                trace(NS_DEBUG::str<>("Registered region"), "device", device_id, *this));
+        }
 
         if (bind_mr)
         {
             ret = fi_mr_bind(region_, (struct fid*)ep, 0);
-            if (ret) { throw libfabric::fabric_error(int(ret), "fi_mr_bind"); }
-            else { DEBUG(NS_MEMORY::mrn_deb, trace(NS_DEBUG::str<>("Bound region"), *this)); }
+            if (ret) { throw NS_LIBFABRIC::fabric_error(int(ret), "fi_mr_bind"); }
+            else { LF_DEB(NS_MEMORY::mrn_deb, trace(NS_DEBUG::str<>("Bound region"), *this)); }
 
             ret = fi_mr_enable(region_);
-            if (ret) { throw libfabric::fabric_error(int(ret), "fi_mr_enable"); }
-            else { DEBUG(NS_MEMORY::mrn_deb, trace(NS_DEBUG::str<>("Enabled region"), *this)); }
+            if (ret) { throw NS_LIBFABRIC::fabric_error(int(ret), "fi_mr_enable"); }
+            else { LF_DEB(NS_MEMORY::mrn_deb, trace(NS_DEBUG::str<>("Enabled region"), *this)); }
         }
     }
 
